@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bist-factor-backtest"
+version = "0.1.0"
+description = "Point-in-time monthly BIST financial score rotation backtest"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.14",
+  "duckdb>=0.10",
+  "openpyxl>=3.1",
+  "pandas>=2.1",
+  "pyarrow>=14",
+  "pypdf>=6.10",
+  "pydantic>=2.6",
+  "pykap>=0.2.0",
+  "pyyaml>=6.0",
+  "requests>=2.31",
+  "typer>=0.12",
+  "xlsxwriter>=3.1",
+  "yfinance>=0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+]
+
+[project.scripts]
+bist-backtest = "bist_factor_backtest.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=bist_factor_backtest --cov-report=term-missing --cov-fail-under=100"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = [
+  "src/bist_factor_backtest/cli.py",
+  "src/bist_factor_backtest/data/index_announcements.py",
+  "src/bist_factor_backtest/data/kap_loader.py",
+  "src/bist_factor_backtest/data/price_loader_yfinance.py",
+  "src/bist_factor_backtest/data/storage.py",
+  "src/bist_factor_backtest/reports/*",
+]

@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# Python cache/test artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data
+data/*.duckdb
+data/*.duckdb.wal
+data/*.duckdb-shm
+data/raw/
+data/processed/
+
+# Generated reports
+reports/*.xlsx
+reports/*.csv
+
+# Local scratch / debug captures
+bildirim_*.html
+fr_*.html
+financial_search.html
+bildirim_page.js
+
+# Optional local overrides
+config.local.yaml
+config.retry.yaml
+config.retry5.yaml
