@@ -18,7 +18,7 @@ from bist_factor_backtest.data.point_in_time import get_latest_known_annual_fina
 from bist_factor_backtest.data.universe import get_universe_for_date
 from bist_factor_backtest.factors.filters import FilterSettings, apply_filters
 from bist_factor_backtest.factors.firm_value import attach_market_cap_firm_value
-from bist_factor_backtest.factors.liquidity import attach_avg_turnover_20d
+from bist_factor_backtest.factors.liquidity import attach_avg_turnover_20d, attach_recent_return_20d
 from bist_factor_backtest.factors.scoring import calculate_scores
 
 
@@ -72,21 +72,23 @@ def run_monthly_rotation_backtest(
         universe = get_universe_for_date(universe_membership, config.universe.name, buy_date)
         candidates = known[known["symbol"].isin(universe)].copy()
         candidates = _attach_universe_metadata(candidates, universe_membership, config.universe.name, buy_date)
+        effective_top_n = _resolve_effective_top_n(config, feature_prices, universe, buy_date)
         if candidates.empty:
             selected = candidates
         else:
             candidates = attach_avg_turnover_20d(candidates, feature_prices, buy_date)
+            candidates = attach_recent_return_20d(candidates, feature_prices, buy_date)
             candidates = attach_market_cap_firm_value(candidates, feature_prices, rebalance_datetime)
             candidates = calculate_scores(candidates, config.scoring)
             filter_settings = FilterSettings(**config.filters.model_dump())
             filtered, rejected = apply_filters(candidates, filter_settings)
             rejected["month"] = month
             rejected_candidates.append(rejected)
-            ranked = filtered.sort_values("score", ascending=False)
+            ranked = filtered.sort_values(["selection_score", "score"], ascending=False)
             selected = _apply_hold_buffer_rule(
                 ranked,
                 previous_held_symbols,
-                config.strategy.top_n,
+                effective_top_n,
                 config.strategy.hold_buffer_rank,
             )
         positions = build_positions(
@@ -207,11 +209,65 @@ def _apply_hold_buffer_rule(
     retained = buffer_pool[buffer_pool["symbol"].astype(str).isin(previous_held_symbols)]
     remaining_slots = max(top_n - len(retained), 0)
     if remaining_slots == 0:
-        return retained.sort_values("score", ascending=False).head(top_n)
+        return retained.sort_values(["selection_score", "score"], ascending=False).head(top_n)
 
     additions = ranked[~ranked["symbol"].astype(str).isin(retained["symbol"].astype(str))].head(remaining_slots)
     selected = pd.concat([retained, additions], ignore_index=True).drop_duplicates(subset=["symbol"])
-    return selected.sort_values("score", ascending=False).head(top_n)
+    return selected.sort_values(["selection_score", "score"], ascending=False).head(top_n)
+
+
+def _resolve_effective_top_n(
+    config: BacktestConfig,
+    prices: pd.DataFrame,
+    universe: list[str],
+    buy_date,
+) -> int:
+    base_top_n = config.strategy.top_n
+    if (
+        config.strategy.regime_filter_mode != "breadth_sma"
+        or config.strategy.regime_filter_top_n is None
+        or config.strategy.regime_filter_top_n >= base_top_n
+    ):
+        return base_top_n
+
+    breadth = _calculate_universe_breadth_above_sma(
+        prices=prices,
+        symbols=universe,
+        as_of_date=buy_date,
+        lookback_days=config.strategy.regime_filter_lookback_days,
+    )
+    if breadth is None:
+        return base_top_n
+    if breadth < config.strategy.regime_filter_breadth_threshold:
+        return config.strategy.regime_filter_top_n
+    return base_top_n
+
+
+def _calculate_universe_breadth_above_sma(
+    prices: pd.DataFrame,
+    symbols: list[str],
+    as_of_date,
+    lookback_days: int,
+) -> float | None:
+    if lookback_days <= 1 or not symbols:
+        return None
+    universe_prices = prices[prices["symbol"].isin(symbols)].copy()
+    if universe_prices.empty:
+        return None
+    universe_prices = universe_prices[universe_prices["date"] < as_of_date].copy()
+    if universe_prices.empty:
+        return None
+    universe_prices = universe_prices.sort_values(["symbol", "date"])
+    close_col = "adjusted_close" if "adjusted_close" in universe_prices.columns else "close"
+    universe_prices["sma"] = (
+        universe_prices.groupby("symbol")[close_col]
+        .transform(lambda s: s.rolling(lookback_days, min_periods=lookback_days).mean())
+    )
+    latest = universe_prices.groupby("symbol", as_index=False).tail(1)
+    latest = latest[latest["sma"].notna()].copy()
+    if latest.empty:
+        return None
+    return float((latest[close_col] > latest["sma"]).mean())
 
 
 def _attach_note_best_fit_growth_inputs(

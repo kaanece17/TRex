@@ -169,8 +169,212 @@ class TestCalculateScores:
         assert result["x2"].tolist() == pytest.approx([0.05, expected_x2_cap])
         assert result["score"].tolist() == pytest.approx([0.17, expected_x1_cap + expected_x2_cap])
 
+    def test_calculateScores_noteBestFit_appliesX1X2WeightsToScore(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                }
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(formula="note_best_fit", use_ttm=False, x1_weight=0.9, x2_weight=1.0),
+        )
+
+        assert result["x1"].iloc[0] == pytest.approx(0.3)
+        assert result["x2"].iloc[0] == pytest.approx(0.08)
+        assert result["score"].iloc[0] == pytest.approx(0.35)
+        assert result["x1_share"].iloc[0] == pytest.approx(0.3 / 0.38)
+        assert result["x2_share"].iloc[0] == pytest.approx(0.08 / 0.38)
+
+    def test_calculateScores_selectionScore_addsSmallMomentumRankBonus(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                    "recent_return_20d": -0.10,
+                },
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                    "recent_return_20d": 0.20,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(
+                formula="note_best_fit",
+                use_ttm=False,
+                momentum_rank_weight=0.2,
+            ),
+        )
+
+        assert result["score"].tolist() == pytest.approx([0.38, 0.38])
+        assert result["selection_score"].iloc[1] > result["selection_score"].iloc[0]
+
 
 class TestApplyFilters:
+    def test_applyFilters_minRecentReturn20d_rejectsNegativeMomentumRows(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "recent_return_20d": -0.01,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "recent_return_20d": 0.02,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(data, FilterSettings(min_recent_return_20d=0.0, min_avg_turnover_20d=0))
+
+        assert filtered["symbol"].tolist() == ["BBB"]
+        assert rejected["symbol"].tolist() == ["AAA"]
+        assert rejected["reason"].tolist() == ["negative_recent_momentum"]
+
+    def test_applyFilters_maxNetIncomeToEquity_rejectsExtremeRows(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income": 80,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income": 150,
+                    "net_income_ttm": 150,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(
+            data,
+            FilterSettings(
+                require_positive_equity=True,
+                require_positive_net_income_ttm=False,
+                require_positive_previous_net_income_ttm=False,
+                require_positive_operating_profit_ttm=False,
+                require_positive_firm_value=False,
+                require_shares_outstanding=True,
+                max_net_income_to_equity=1.0,
+                min_avg_turnover_20d=1,
+            ),
+        )
+
+        assert filtered["symbol"].tolist() == ["AAA"]
+        assert rejected["symbol"].tolist() == ["BBB"]
+        assert rejected["reason"].tolist() == ["excessive_net_income_to_equity"]
+
+    def test_applyFilters_x1DominantNegativeMomentum_rejectsMatchingRows(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income": 80,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "x1_share": 0.91,
+                    "recent_return_20d": -0.01,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income": 80,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "x1_share": 0.91,
+                    "recent_return_20d": 0.02,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(
+            data,
+            FilterSettings(
+                require_positive_equity=True,
+                require_positive_net_income_ttm=False,
+                require_positive_previous_net_income_ttm=False,
+                require_positive_operating_profit_ttm=False,
+                require_positive_firm_value=False,
+                require_shares_outstanding=True,
+                x1_dominant_share_threshold=0.90,
+                recent_return_20d_threshold=0.0,
+                min_avg_turnover_20d=1,
+            ),
+        )
+
+        assert filtered["symbol"].tolist() == ["BBB"]
+        assert rejected["symbol"].tolist() == ["AAA"]
+        assert rejected["reason"].tolist() == ["x1_dominant_negative_momentum"]
+
     def test_applyFilters_invalidRows_returnsFilteredAndRejectedReasons(self):
         data = pd.DataFrame(
             [

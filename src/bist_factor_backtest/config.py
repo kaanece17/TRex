@@ -62,6 +62,10 @@ class PointInTimeConfig(_Model):
 class StrategyConfig(_Model):
     top_n: int = 5
     hold_buffer_rank: int | None = None
+    regime_filter_mode: str | None = None
+    regime_filter_top_n: int | None = None
+    regime_filter_lookback_days: int = 200
+    regime_filter_breadth_threshold: float = 0.5
     rebalance_frequency: str = "monthly"
     rebalance_day: str = "first_trading_day"
     rebalance_time: str = "market_open"
@@ -79,6 +83,9 @@ class ScoringConfig(_Model):
     use_ttm: bool = True
     firm_value_mode: str = "market_cap"
     growth_mode: str = "normalized_percent_cap"
+    x1_weight: float = 1.0
+    x2_weight: float = 1.0
+    momentum_rank_weight: float = 0.0
     x1_cap_quantile: float | None = None
     x2_cap_quantile: float | None = None
 
@@ -95,6 +102,10 @@ class FiltersConfig(_Model):
     require_positive_operating_profit_ttm: bool = True
     require_positive_firm_value: bool = True
     require_shares_outstanding: bool = True
+    max_net_income_to_equity: float | None = None
+    x1_dominant_share_threshold: float | None = None
+    recent_return_20d_threshold: float | None = None
+    min_recent_return_20d: float | None = None
     min_avg_turnover_20d: float = 1_000_000
 
 
