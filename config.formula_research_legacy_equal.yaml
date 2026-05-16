@@ -44,8 +44,6 @@ scoring:
   use_ttm: false
   firm_value_mode: market_cap
   growth_mode: raw
-  x1_cap_quantile: 0.95
-  x2_cap_quantile: 0.95
 
 costs:
   commission_rate: 0.002

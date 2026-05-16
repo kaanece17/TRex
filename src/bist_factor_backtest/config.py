@@ -79,6 +79,8 @@ class ScoringConfig(_Model):
     use_ttm: bool = True
     firm_value_mode: str = "market_cap"
     growth_mode: str = "normalized_percent_cap"
+    x1_cap_quantile: float | None = None
+    x2_cap_quantile: float | None = None
 
 
 class CostsConfig(_Model):

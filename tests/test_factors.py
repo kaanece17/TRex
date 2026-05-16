@@ -131,6 +131,44 @@ class TestCalculateScores:
         assert result["x2"].iloc[0] == pytest.approx(0.08)
         assert result["score"].iloc[0] == pytest.approx(0.38)
 
+    def test_calculateScores_noteBestFit_capsX1AndX2AtConfiguredQuantiles(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 100,
+                    "latest_cum_net_income": 120,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 50,
+                    "firm_value": 1000,
+                },
+                {
+                    "net_income": 1000,
+                    "latest_cum_net_income": 1000,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 500,
+                    "firm_value": 1000,
+                },
+            ]
+        )
+        expected_x1_cap = pd.Series([0.12, 10.0]).quantile(0.5)
+        expected_x2_cap = pd.Series([0.05, 0.5]).quantile(0.5)
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(
+                formula="note_best_fit",
+                use_ttm=False,
+                x1_cap_quantile=0.5,
+                x2_cap_quantile=0.5,
+            ),
+        )
+
+        assert result["x1"].tolist() == pytest.approx([0.12, expected_x1_cap])
+        assert result["x2"].tolist() == pytest.approx([0.05, expected_x2_cap])
+        assert result["score"].tolist() == pytest.approx([0.17, expected_x1_cap + expected_x2_cap])
+
 
 class TestApplyFilters:
     def test_applyFilters_invalidRows_returnsFilteredAndRejectedReasons(self):
