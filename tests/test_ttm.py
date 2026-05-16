@@ -89,3 +89,126 @@ class TestAddTtmValues:
         result = add_ttm_values(financials)
 
         assert result["net_income_ttm"].iloc[-1] == expected
+
+    def test_addTtmValues_q4FallsBackToAnnualCumulativeWhenEarlierQuarterMissing(self):
+        financials = pd.DataFrame(
+            [
+                {
+                    "symbol": "ABC",
+                    "period_end": "2022-06-30",
+                    "fiscal_year": 2022,
+                    "fiscal_quarter": 2,
+                    "net_income": 20,
+                    "operating_profit": 30,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2022-09-30",
+                    "fiscal_year": 2022,
+                    "fiscal_quarter": 3,
+                    "net_income": 40,
+                    "operating_profit": 60,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2022-12-31",
+                    "fiscal_year": 2022,
+                    "fiscal_quarter": 4,
+                    "net_income": 100,
+                    "operating_profit": 150,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-03-31",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 1,
+                    "net_income": 30,
+                    "operating_profit": 40,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-06-30",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 2,
+                    "net_income": 70,
+                    "operating_profit": 90,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-09-30",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 3,
+                    "net_income": 120,
+                    "operating_profit": 130,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-12-31",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 4,
+                    "net_income": 200,
+                    "operating_profit": 260,
+                },
+            ]
+        )
+
+        result = add_ttm_values(financials)
+        q4_2022 = result[(result["fiscal_year"] == 2022) & (result["fiscal_quarter"] == 4)].iloc[0]
+        q4_2023 = result[(result["fiscal_year"] == 2023) & (result["fiscal_quarter"] == 4)].iloc[0]
+
+        assert q4_2022["net_income_ttm"] == 100
+        assert q4_2023["previous_net_income_ttm"] == 100
+
+    def test_addTtmValues_q2FallsBackToAnnualPlusCurrentMinusPreviousYearSameQuarter(self):
+        financials = pd.DataFrame(
+            [
+                {
+                    "symbol": "ABC",
+                    "period_end": "2021-06-30",
+                    "fiscal_year": 2021,
+                    "fiscal_quarter": 2,
+                    "net_income": 40,
+                    "operating_profit": 50,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2021-12-31",
+                    "fiscal_year": 2021,
+                    "fiscal_quarter": 4,
+                    "net_income": 100,
+                    "operating_profit": 120,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2022-06-30",
+                    "fiscal_year": 2022,
+                    "fiscal_quarter": 2,
+                    "net_income": 70,
+                    "operating_profit": 80,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2022-12-31",
+                    "fiscal_year": 2022,
+                    "fiscal_quarter": 4,
+                    "net_income": 160,
+                    "operating_profit": 190,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-06-30",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 2,
+                    "net_income": 90,
+                    "operating_profit": 110,
+                },
+            ]
+        )
+
+        result = add_ttm_values(financials)
+        q2_2022 = result[(result["fiscal_year"] == 2022) & (result["fiscal_quarter"] == 2)].iloc[0]
+        q2_2023 = result[(result["fiscal_year"] == 2023) & (result["fiscal_quarter"] == 2)].iloc[0]
+
+        assert q2_2022["net_income_ttm"] == 130
+        assert q2_2022["operating_profit_ttm"] == 150
+        assert q2_2023["previous_net_income_ttm"] == 130

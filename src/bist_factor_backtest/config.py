@@ -61,6 +61,7 @@ class PointInTimeConfig(_Model):
 
 class StrategyConfig(_Model):
     top_n: int = 5
+    hold_buffer_rank: int | None = None
     rebalance_frequency: str = "monthly"
     rebalance_day: str = "first_trading_day"
     rebalance_time: str = "market_open"
@@ -69,6 +70,7 @@ class StrategyConfig(_Model):
     sell_rule: str = "last_trading_day_open"
     execution_mode: str = "ideal_open"
     weighting: str = "equal_weight"
+    score_weight_cap: float | None = None
     if_less_than_top_n: str = "use_available"
 
 
@@ -76,6 +78,7 @@ class ScoringConfig(_Model):
     formula: str = "x1_plus_x2"
     use_ttm: bool = True
     firm_value_mode: str = "market_cap"
+    growth_mode: str = "normalized_percent_cap"
 
 
 class CostsConfig(_Model):

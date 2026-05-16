@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 
+from bist_factor_backtest.config import ScoringConfig
 from bist_factor_backtest.factors.filters import FilterSettings, apply_filters
 from bist_factor_backtest.factors.firm_value import calculate_market_cap_firm_value
 from bist_factor_backtest.factors.firm_value import attach_market_cap_firm_value
@@ -90,6 +91,45 @@ class TestCalculateScores:
         result = calculate_scores(data)
 
         assert result["net_income_growth"].iloc[0] == pytest.approx(expected_growth)
+
+    def test_calculateScores_rawGrowthMode_doesNotNormalizeOrClip(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income_ttm": 1100,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                }
+            ]
+        )
+
+        result = calculate_scores(data, ScoringConfig(growth_mode="raw"))
+
+        assert result["net_income_growth"].iloc[0] == pytest.approx(10.0)
+        assert result["x1"].iloc[0] == pytest.approx(12.1)
+
+    def test_calculateScores_noteBestFit_usesLatestCumulativeGrowthWithAnnualBase(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                }
+            ]
+        )
+
+        result = calculate_scores(data, ScoringConfig(formula="note_best_fit", use_ttm=False))
+
+        assert result["net_income_growth"].iloc[0] == pytest.approx(0.5)
+        assert result["x1"].iloc[0] == pytest.approx(0.3)
+        assert result["x2"].iloc[0] == pytest.approx(0.08)
+        assert result["score"].iloc[0] == pytest.approx(0.38)
 
 
 class TestApplyFilters:

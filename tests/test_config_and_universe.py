@@ -31,6 +31,7 @@ point_in_time:
   if_only_date_available: previous_day_only
 strategy:
   top_n: 5
+  hold_buffer_rank: 7
   rebalance_frequency: monthly
   rebalance_day: first_trading_day
   rebalance_time: market_open
@@ -68,6 +69,7 @@ backtest:
         assert result.data.duckdb_path == expected
         assert result.model_dump()["project"]["name"] == "test"
         assert result.universe.symbol_aliases_file == Path("data/universe/aliases.csv")
+        assert result.strategy.hold_buffer_rank == 7
 
     def test_fallbackModel_methods_returnShallowObjectData(self):
         result = config_module._FallbackModel.model_validate({"alpha": 1, "beta": "two"})
@@ -100,6 +102,7 @@ backtest:
             },
             "strategy": {
                 "top_n": 5,
+                "hold_buffer_rank": 7,
                 "rebalance_frequency": "monthly",
                 "rebalance_day": "first_trading_day",
                 "rebalance_time": "market_open",
