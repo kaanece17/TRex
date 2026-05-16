@@ -8,13 +8,23 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+from bist_factor_backtest.data.symbol_aliases import (
+    apply_symbol_aliases,
+    canonicalize_symbol_list,
+    load_symbol_aliases,
+)
 
-def load_static_universe(path: str | Path) -> list[str]:
+
+def load_static_universe(path: str | Path, symbol_aliases_file: str | Path | None = None) -> list[str]:
     data = pd.read_csv(path)
-    return data["symbol"].astype(str).str.upper().tolist()
+    symbols = data["symbol"].astype(str).str.upper().tolist()
+    if symbol_aliases_file is None or not Path(symbol_aliases_file).exists():
+        return symbols
+    aliases = load_symbol_aliases(symbol_aliases_file)
+    return canonicalize_symbol_list(symbols, aliases)
 
 
-def load_universe_membership(path: str | Path) -> pd.DataFrame:
+def load_universe_membership(path: str | Path, symbol_aliases_file: str | Path | None = None) -> pd.DataFrame:
     data = pd.read_csv(path)
     data["start_date"] = pd.to_datetime(data["start_date"]).dt.date
     data["end_date"] = _to_date_or_none(data["end_date"])
@@ -22,6 +32,9 @@ def load_universe_membership(path: str | Path) -> pd.DataFrame:
     for column, default in {"source_type": "unknown", "source_url": None, "confidence": "low"}.items():
         if column not in data.columns:
             data[column] = default
+    if symbol_aliases_file is not None and Path(symbol_aliases_file).exists():
+        aliases = load_symbol_aliases(symbol_aliases_file)
+        data = apply_symbol_aliases(data, aliases)
     return data
 
 
@@ -39,7 +52,7 @@ def get_universe_for_date(
         (data["start_date"] <= as_of_date)
         & (data["end_date"].isna() | (data["end_date"] >= as_of_date))
     ]
-    return active["symbol"].tolist()
+    return list(dict.fromkeys(active["symbol"].tolist()))
 
 
 def parse_cnbce_bist_codes(html: str) -> list[str]:

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS financial_statements (
     is_consolidated BOOLEAN,
     is_revised BOOLEAN,
     source_url TEXT,
+    announcement_source_url TEXT,
     raw_hash TEXT,
     created_at TIMESTAMP,
     shares_outstanding DOUBLE,
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     firm_value DOUBLE,
     source_statement_id TEXT,
     source_url TEXT,
+    announcement_source_url TEXT,
     raw_hash TEXT
 );
 
@@ -217,3 +219,53 @@ class DuckDbStorage:
         for column in ["universe_source_type", "universe_source_url", "universe_confidence"]:
             if column not in position_columns:
                 self.connection.execute(f"ALTER TABLE backtest_selected_positions ADD COLUMN {column} TEXT")
+        statement_columns = self.connection.execute("PRAGMA table_info('financial_statements')").df()["name"].tolist()
+        if "announcement_source_url" not in statement_columns:
+            self.connection.execute("ALTER TABLE financial_statements ADD COLUMN announcement_source_url TEXT")
+        snapshot_columns = self.connection.execute("PRAGMA table_info('financial_snapshots')").df()["name"].tolist()
+        if "announcement_source_url" not in snapshot_columns:
+            self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN announcement_source_url TEXT")
+        self._ensure_text_column_type(
+            table="financial_statements",
+            columns=["statement_id", "raw_hash"],
+        )
+        self._ensure_text_column_type(
+            table="financial_snapshots",
+            columns=["source_statement_id", "raw_hash"],
+        )
+
+    def _ensure_text_column_type(self, table: str, columns: list[str]) -> None:
+        info = self.connection.execute(f"PRAGMA table_info('{table}')").df()
+        current_types = {
+            str(row["name"]): str(row["type"]).upper()
+            for _, row in info.iterrows()
+        }
+        needs_rebuild = any(current_types.get(column, "TEXT") != "TEXT" for column in columns)
+        if not needs_rebuild:
+            return
+        temp_table = f"{table}__migrated"
+        self.connection.execute(f"DROP TABLE IF EXISTS {temp_table}")
+        table_sql = self.connection.execute(
+            "SELECT sql FROM duckdb_tables() WHERE table_name = ?",
+            [table],
+        ).fetchone()
+        if table_sql is None or table_sql[0] is None:
+            return
+        create_sql = str(table_sql[0]).replace(f"CREATE TABLE {table}", f"CREATE TABLE {temp_table}")
+        for column in columns:
+            current_type = current_types.get(column)
+            if current_type and current_type != "TEXT":
+                create_sql = create_sql.replace(f"{column} {current_type}", f"{column} TEXT")
+        self.connection.execute(create_sql)
+        select_parts: list[str] = []
+        for _, row in info.iterrows():
+            name = str(row["name"])
+            if name in columns:
+                select_parts.append(f"CAST({name} AS TEXT) AS {name}")
+            else:
+                select_parts.append(name)
+        self.connection.execute(
+            f"INSERT INTO {temp_table} SELECT {', '.join(select_parts)} FROM {table}"
+        )
+        self.connection.execute(f"DROP TABLE {table}")
+        self.connection.execute(f"ALTER TABLE {temp_table} RENAME TO {table}")

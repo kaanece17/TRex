@@ -34,7 +34,6 @@ KBORU,BIST_SANAYI,2023-12-14,,kap_announcement,https://www.kap.org.tr/tr/Bildiri
 AGROT,BIST_SANAYI,2023-11-23,,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1219377,high
 EKOS,BIST_SANAYI,2023-11-21,,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1218921,high
 MARBL,BIST_SANAYI,2023-11-08,,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1214893,high
-DOFER,BIST_SANAYI,2023-10-16,,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1205978,high
 ACSEL,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 ADEL,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 AEFES,BIST_SANAYI,2020-01-01,,manual_seed,,medium
@@ -94,6 +93,7 @@ DITAS,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DMRGD,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DMSAS,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DNISI,BIST_SANAYI,2020-01-01,,manual_seed,,medium
+DOFER,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DOGUB,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DOKTA,BIST_SANAYI,2020-01-01,,manual_seed,,medium
 DURDO,BIST_SANAYI,2020-01-01,,manual_seed,,medium

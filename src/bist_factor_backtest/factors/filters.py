@@ -25,7 +25,6 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
     if settings.require_complete_financial_snapshot:
         required_columns = [
             "period_end",
-            "announcement_datetime",
             "equity",
             "net_income_ttm",
             "previous_net_income_ttm",
@@ -38,6 +37,14 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
                 missing_mask = pd.Series(True, index=result.index)
                 break
             missing_mask = missing_mask | result[column].isna()
+        # Point-in-time logic accepts date-only announcements when exact datetimes
+        # are unavailable, so treat either field as sufficient coverage here.
+        if "announcement_datetime" in result.columns or "announcement_date" in result.columns:
+            announcement_datetime = result["announcement_datetime"] if "announcement_datetime" in result.columns else pd.Series(pd.NA, index=result.index)
+            announcement_date = result["announcement_date"] if "announcement_date" in result.columns else pd.Series(pd.NA, index=result.index)
+            missing_mask = missing_mask | (announcement_datetime.isna() & announcement_date.isna())
+        else:
+            missing_mask = pd.Series(True, index=result.index)
         checks.append(("missing_financial_data", missing_mask))
     if settings.require_positive_equity:
         checks.append(("negative_equity", result["equity"] <= 0))

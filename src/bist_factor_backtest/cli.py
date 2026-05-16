@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 import requests
@@ -9,9 +9,26 @@ import typer
 
 from bist_factor_backtest.backtest.monthly_rotation import run_monthly_rotation_backtest
 from bist_factor_backtest.config import load_config
+from bist_factor_backtest.data.coverage_audit import (
+    build_alternative_coverage_audit,
+    build_alternative_fill_queue,
+    summarize_alternative_coverage,
+)
+from bist_factor_backtest.data.earnings_investing import InvestingEarningsLoader, merge_announcements_into_statements
+from bist_factor_backtest.data.issuer_ir_announcements import ISSUER_IR_SOURCES, IssuerIRAnnouncementsLoader
+from bist_factor_backtest.data.financials_isyatirim import IsYatirimFinancialLoader
+from bist_factor_backtest.data.investing_registry import (
+    build_registry_urls,
+    bootstrap_investing_registry,
+    load_investing_registry,
+    validate_investing_registry,
+)
+from bist_factor_backtest.data.mkk_esirket_announcements import MKK_ESIR_SOURCES, MkkEsirketAnnouncementsLoader
+from bist_factor_backtest.data.listing_gap_audit import build_listing_gap_audit, load_listing_dates
 from bist_factor_backtest.data.kap_loader import KapFinancialLoader, KapNameResolutionError
 from bist_factor_backtest.data.index_announcements import fetch_reconstructed_xusin_membership
 from bist_factor_backtest.data.price_loader_yfinance import YFinancePriceLoader
+from bist_factor_backtest.data.symbol_aliases import apply_symbol_aliases, load_symbol_aliases
 from bist_factor_backtest.data.storage import DuckDbStorage
 from bist_factor_backtest.data.universe import (
     build_current_static_membership,
@@ -41,7 +58,7 @@ def load_prices(config: Path = Path("config.yaml")) -> None:
     settings = load_config(config)
     storage = DuckDbStorage(settings.data.duckdb_path)
     storage.initialize()
-    symbols = load_static_universe(settings.universe.symbols_file)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
     start_date = settings.data.price_preload_start or settings.backtest.start_date
     prices = YFinancePriceLoader().load(symbols, start_date, settings.backtest.end_date)
     storage.replace_table("market_prices", prices)
@@ -61,7 +78,7 @@ def load_financials_kap(
     preflight_checks: int = 3,
 ) -> None:
     settings = load_config(config)
-    symbols = load_static_universe(settings.universe.symbols_file)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
     if only_incomplete:
         symbols = _filter_only_incomplete_symbols(symbols, settings.data.duckdb_path)
     start_date = settings.data.financial_preload_start or settings.backtest.start_date
@@ -216,6 +233,391 @@ def load_financials_kap(
 
 
 @app.command()
+def load_financials_isyatirim(
+    source_file: Path,
+    config: Path = Path("config.yaml"),
+) -> None:
+    settings = load_config(config)
+    records = _read_records_file(source_file)
+    if "symbol" not in records.columns:
+        raise typer.BadParameter("source_file must include a symbol column")
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    loader = IsYatirimFinancialLoader()
+    failures: list[pd.DataFrame] = []
+    for symbol, group in records.groupby(records["symbol"].astype(str).str.upper()):
+        result = loader.build_from_records(symbol, group.to_dict(orient="records"))
+        if not result.statements.empty:
+            _upsert_statements(storage, result.statements)
+        if not result.items.empty:
+            _replace_items_for_statements(storage, result.items)
+        if not result.failures.empty:
+            failures.append(result.failures)
+            _upsert_symbol_load_status(storage, symbol, "incomplete", "isyatirim_missing_records")
+        else:
+            _upsert_symbol_load_status(storage, symbol, "completed", "isyatirim_loaded")
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_financials_isyatirim_live(
+    config: Path = Path("config.yaml"),
+    max_symbols: int | None = None,
+    request_timeout_seconds: int = 20,
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    if max_symbols is not None:
+        symbols = symbols[:max_symbols]
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    loader = IsYatirimFinancialLoader(request_timeout_seconds=request_timeout_seconds)
+    failures: list[pd.DataFrame] = []
+    for index, symbol in enumerate(symbols, start=1):
+        typer.echo(f"[{index}/{len(symbols)}] fetching İş Yatırım financials for {symbol}")
+        try:
+            records = loader.fetch_records(symbol)
+            result = loader.build_from_records(symbol, records)
+        except Exception as error:
+            _upsert_symbol_load_status(storage, symbol, "failed", "isyatirim_fetch_failed")
+            failures.append(pd.DataFrame([{"symbol": symbol, "reason": "isyatirim_fetch_failed", "detail": str(error)}]))
+            continue
+        if not result.statements.empty:
+            _upsert_statements(storage, result.statements)
+        if not result.items.empty:
+            _replace_items_for_statements(storage, result.items)
+        if not result.failures.empty:
+            failures.append(result.failures)
+            _upsert_symbol_load_status(storage, symbol, "incomplete", "isyatirim_missing_records")
+        else:
+            _upsert_symbol_load_status(storage, symbol, "completed", "isyatirim_loaded")
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_announcement_dates_investing(
+    source_file: Path,
+    config: Path = Path("config.yaml"),
+) -> None:
+    settings = load_config(config)
+    records = _read_records_file(source_file)
+    if "symbol" not in records.columns:
+        raise typer.BadParameter("source_file must include a symbol column")
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+    loader = InvestingEarningsLoader()
+    failures: list[pd.DataFrame] = []
+    for symbol, group in records.groupby(records["symbol"].astype(str).str.upper()):
+        result = loader.build_from_records(symbol, group.to_dict(orient="records"))
+        if not result.announcements.empty:
+            statements = merge_announcements_into_statements(
+                statements,
+                result.announcements,
+                overwrite_existing=False,
+            )
+            changed = statements[
+                (statements["symbol"].astype(str).str.upper() == symbol)
+                & statements["announcement_date"].notna()
+            ].copy()
+            if not changed.empty:
+                _upsert_statements(storage, changed)
+        if not result.failures.empty:
+            failures.append(result.failures)
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_announcement_dates_investing_live(
+    source_file: Path,
+    config: Path = Path("config.yaml"),
+    max_symbols: int | None = None,
+    request_timeout_seconds: int = 20,
+    min_request_interval_seconds: float = 0.2,
+    only_missing: bool = True,
+) -> None:
+    settings = load_config(config)
+    url_records = build_registry_urls(load_investing_registry(source_file, settings.universe.symbol_aliases_file))
+    issues = validate_investing_registry(url_records)
+    if issues:
+        raise typer.BadParameter(f"invalid investing registry: {issues[0]}")
+    if max_symbols is not None:
+        url_records = url_records.head(max_symbols)
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+    if only_missing:
+        missing_symbols = set(
+            statements[statements["announcement_date"].isna()]["symbol"].astype(str).str.upper().tolist()
+        )
+        url_records = url_records[url_records["symbol"].astype(str).str.upper().isin(missing_symbols)].reset_index(drop=True)
+    loader = InvestingEarningsLoader(
+        request_timeout_seconds=request_timeout_seconds,
+        min_request_interval_seconds=min_request_interval_seconds,
+    )
+    failures: list[pd.DataFrame] = []
+    for index, row in enumerate(url_records.to_dict(orient="records"), start=1):
+        symbol = str(row["symbol"]).upper()
+        earnings_url = _build_investing_earnings_url(row)
+        typer.echo(f"[{index}/{len(url_records)}] fetching Investing earnings dates for {symbol}")
+        try:
+            records = loader.fetch_records(symbol, earnings_url)
+            result = loader.build_from_records(symbol, records)
+        except Exception as error:
+            failures.append(pd.DataFrame([{"symbol": symbol, "reason": "investing_fetch_failed", "detail": str(error)}]))
+            continue
+        if not result.announcements.empty:
+            statements = merge_announcements_into_statements(
+                statements,
+                result.announcements,
+                overwrite_existing=False,
+            )
+            changed = statements[
+                (statements["symbol"].astype(str).str.upper() == symbol)
+                & statements["announcement_date"].notna()
+            ].copy()
+            if not changed.empty:
+                _upsert_statements(storage, changed)
+        if not result.failures.empty:
+            failures.append(result.failures)
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_announcement_dates_issuer_ir_fallback(
+    config: Path = Path("config.yaml"),
+    symbols: str | None = None,
+    max_symbols: int | None = None,
+    only_missing: bool = True,
+    request_timeout_seconds: int = 20,
+    min_request_interval_seconds: float = 0.2,
+) -> None:
+    settings = load_config(config)
+    requested_symbols = [symbol.strip().upper() for symbol in (symbols or "").split(",") if symbol.strip()]
+    target_symbols = requested_symbols or sorted(ISSUER_IR_SOURCES.keys())
+    if max_symbols is not None:
+        target_symbols = target_symbols[:max_symbols]
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+    if only_missing:
+        missing_symbols = set(
+            statements[statements["announcement_date"].isna()]["symbol"].astype(str).str.upper().tolist()
+        )
+        target_symbols = [symbol for symbol in target_symbols if symbol in missing_symbols]
+    loader = IssuerIRAnnouncementsLoader(
+        request_timeout_seconds=request_timeout_seconds,
+        min_request_interval_seconds=min_request_interval_seconds,
+    )
+    normalizer = InvestingEarningsLoader()
+    failures: list[pd.DataFrame] = []
+    for index, symbol in enumerate(target_symbols, start=1):
+        typer.echo(f"[{index}/{len(target_symbols)}] fetching issuer IR fallback announcement dates for {symbol}")
+        try:
+            records = loader.fetch_records(symbol)
+            result = normalizer.build_from_records(symbol, records)
+        except Exception as error:
+            failures.append(
+                pd.DataFrame([{"symbol": symbol, "reason": "issuer_ir_fetch_failed", "detail": str(error)}])
+            )
+            continue
+        if not result.announcements.empty:
+            statements = merge_announcements_into_statements(
+                statements,
+                result.announcements,
+                overwrite_existing=False,
+            )
+            changed = statements[
+                (statements["symbol"].astype(str).str.upper() == symbol)
+                & statements["announcement_date"].notna()
+            ].copy()
+            if not changed.empty:
+                _upsert_statements(storage, changed)
+        if not result.failures.empty:
+            failures.append(result.failures)
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_announcement_dates_mkk_esirket_fallback(
+    config: Path = Path("config.yaml"),
+    symbols: str | None = None,
+    max_symbols: int | None = None,
+    only_missing: bool = True,
+    request_timeout_seconds: int = 30,
+) -> None:
+    settings = load_config(config)
+    requested_symbols = [symbol.strip().upper() for symbol in (symbols or "").split(",") if symbol.strip()]
+    target_symbols = requested_symbols or sorted(MKK_ESIR_SOURCES.keys())
+    if max_symbols is not None:
+        target_symbols = target_symbols[:max_symbols]
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+    if only_missing:
+        missing_symbols = set(
+            statements[statements["announcement_date"].isna()]["symbol"].astype(str).str.upper().tolist()
+        )
+        target_symbols = [symbol for symbol in target_symbols if symbol in missing_symbols]
+    loader = MkkEsirketAnnouncementsLoader(request_timeout_seconds=request_timeout_seconds)
+    normalizer = InvestingEarningsLoader()
+    failures: list[pd.DataFrame] = []
+    for index, symbol in enumerate(target_symbols, start=1):
+        typer.echo(f"[{index}/{len(target_symbols)}] fetching MKK e-Sirket fallback announcement dates for {symbol}")
+        try:
+            records = loader.fetch_records(symbol)
+            result = normalizer.build_from_records(symbol, records)
+        except Exception as error:
+            failures.append(
+                pd.DataFrame([{"symbol": symbol, "reason": "mkk_esirket_fetch_failed", "detail": str(error)}])
+            )
+            continue
+        if not result.announcements.empty:
+            statements = merge_announcements_into_statements(
+                statements,
+                result.announcements,
+                overwrite_existing=False,
+            )
+            changed = statements[
+                (statements["symbol"].astype(str).str.upper() == symbol)
+                & statements["announcement_date"].notna()
+            ].copy()
+            if not changed.empty:
+                _upsert_statements(storage, changed)
+        if not result.failures.empty:
+            failures.append(result.failures)
+    if failures:
+        typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def audit_listing_gap_classification(
+    config: Path = Path("config.yaml"),
+    listing_dates_file: Path = Path("data/universe/bist_sanayi_listing_dates.csv"),
+    output: Path = Path("reports/missing_announcement_2019_plus_listing_gap_audit.csv"),
+    start_date: str = "2019-01-01",
+) -> None:
+    settings = load_config(config)
+    audit_start_date = pd.to_datetime(start_date).date()
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    snapshots = storage.read_table("financial_snapshots")
+    storage.close()
+    if snapshots.empty:
+        raise typer.BadParameter("financial_snapshots is empty; build snapshots first")
+    listing_dates = load_listing_dates(listing_dates_file)
+    audit = build_listing_gap_audit(
+        snapshots=snapshots,
+        listing_dates=listing_dates,
+        audit_start_date=audit_start_date,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    audit.to_csv(output, index=False)
+    typer.echo(
+        f"listing_gap_rows={len(audit)} "
+        f"post_listing_fetch_gap_rows={int((audit['post_listing_fetch_gap_count'] > 0).sum()) if not audit.empty else 0} "
+        f"pre_listing_expected_rows={int((audit['pre_listing_expected_gap_count'] > 0).sum()) if not audit.empty else 0} "
+        f"unknown_rows={int((audit['unknown_gap_count'] > 0).sum()) if not audit.empty else 0}"
+    )
+
+
+@app.command()
+def validate_investing_registry_file(
+    source_file: Path,
+    config: Path = Path("config.yaml"),
+) -> None:
+    settings = load_config(config)
+    registry = load_investing_registry(source_file, settings.universe.symbol_aliases_file)
+    issues = validate_investing_registry(registry)
+    if issues:
+        typer.echo(pd.DataFrame([{"issue": issue} for issue in issues]).to_string(index=False))
+        raise typer.BadParameter("investing registry validation failed")
+    typer.echo(f"registry_ok rows={len(registry)}")
+
+
+@app.command()
+def bootstrap_investing_registry_file(
+    config: Path = Path("config.yaml"),
+    registry_file: Path = Path("data/universe/bist_sanayi_investing_registry.csv"),
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    existing_registry = (
+        load_investing_registry(registry_file, settings.universe.symbol_aliases_file)
+        if registry_file.exists() and registry_file.stat().st_size > 0
+        else pd.DataFrame(columns=["symbol", "investing_slug", "earnings_url", "is_active", "notes"])
+    )
+    registry = bootstrap_investing_registry(symbols, existing_registry)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry.to_csv(registry_file, index=False)
+    typer.echo(f"bootstrapped_registry rows={len(registry)} path={registry_file}")
+
+
+@app.command()
+def audit_alternative_coverage(
+    config: Path = Path("config.yaml"),
+    registry_file: Path = Path("data/universe/bist_sanayi_investing_registry.csv"),
+    output: Path = Path("reports/alternative_coverage_audit.csv"),
+    queue_output: Path = Path("reports/alternative_coverage_fill_queue.csv"),
+    start_date: str = "2019-01-01",
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    storage.close()
+    registry = (
+        build_registry_urls(load_investing_registry(registry_file, settings.universe.symbol_aliases_file))
+        if registry_file.exists()
+        else pd.DataFrame(columns=["symbol", "investing_slug", "earnings_url", "is_active"])
+    )
+    aliases = (
+        load_symbol_aliases(settings.universe.symbol_aliases_file)
+        if settings.universe.symbol_aliases_file is not None and settings.universe.symbol_aliases_file.exists()
+        else pd.DataFrame(columns=["canonical_symbol", "symbol"])
+    )
+    audit = build_alternative_coverage_audit(
+        symbols=symbols,
+        statements=statements,
+        registry=registry,
+        aliases=aliases,
+        audit_start_date=pd.Timestamp(start_date).date(),
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    audit.to_csv(output, index=False)
+    fill_queue = build_alternative_fill_queue(audit)
+    queue_output.parent.mkdir(parents=True, exist_ok=True)
+    fill_queue.to_csv(queue_output, index=False)
+    typer.echo(summarize_alternative_coverage(audit).to_string(index=False))
+    typer.echo(f"audit_path={output}")
+    typer.echo(f"fill_queue_path={queue_output}")
+
+
+@app.command()
 def load_financials_kap_incomplete(
     config: Path = Path("config.yaml"),
     strict: bool = False,
@@ -282,7 +684,7 @@ def _upsert_symbol_load_status(storage: DuckDbStorage, symbol: str, status: str,
                     "symbol": symbol.upper(),
                     "status": status,
                     "reason": reason,
-                    "updated_at": datetime.utcnow(),
+                    "updated_at": datetime.now(UTC),
                 }
             ]
         ),
@@ -309,7 +711,12 @@ def build_snapshots(config: Path = Path("config.yaml")) -> None:
     storage.initialize()
     statements = storage.read_table("financial_statements")
     items = storage.read_table("financial_statement_items")
-    snapshots = _build_financial_snapshots_from_statements(statements, items)
+    aliases = (
+        load_symbol_aliases(settings.universe.symbol_aliases_file)
+        if settings.universe.symbol_aliases_file is not None and settings.universe.symbol_aliases_file.exists()
+        else pd.DataFrame()
+    )
+    snapshots = _build_financial_snapshots_from_statements(statements, items, aliases)
     snapshots = add_ttm_values(snapshots)
     storage.replace_table("financial_snapshots", snapshots)
     storage.close()
@@ -384,12 +791,12 @@ def export_report(
 
 def _load_membership_for_run(settings):
     if settings.universe.mode == "current_static":
-        symbols = load_static_universe(settings.universe.symbols_file)
+        symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
         return build_current_static_membership(symbols, settings.backtest.start_date, str(settings.universe.symbols_file))
     if settings.universe.mode == "reconstructed_historical":
         if settings.universe.membership_file is None or not settings.universe.membership_file.exists():
             raise typer.BadParameter("reconstructed_historical universe requires an explicit reconstructed membership_file")
-        return load_universe_membership(settings.universe.membership_file)
+        return load_universe_membership(settings.universe.membership_file, settings.universe.symbol_aliases_file)
     raise typer.BadParameter(f"Unsupported universe mode: {settings.universe.mode}")
 
 
@@ -538,6 +945,7 @@ def _mark_legacy_nonfinancial_if_needed(storage: DuckDbStorage, symbol: str, sta
 def _upsert_statements(storage: DuckDbStorage, statements: pd.DataFrame) -> None:
     if statements.empty:
         return
+    statements = _ensure_statement_ids(statements)
     statement_ids = statements["statement_id"].astype(str).tolist()
     placeholders = ", ".join(["?"] * len(statement_ids))
     storage.connection.execute(
@@ -559,16 +967,25 @@ def _replace_items_for_statements(storage: DuckDbStorage, items: pd.DataFrame) -
     storage.append_table("financial_statement_items", items)
 
 
-def _build_financial_snapshots_from_statements(statements: pd.DataFrame, items: pd.DataFrame) -> pd.DataFrame:
+def _build_financial_snapshots_from_statements(
+    statements: pd.DataFrame,
+    items: pd.DataFrame,
+    aliases: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if statements.empty:
         return pd.DataFrame()
-    base = statements.copy()
+    base = _ensure_statement_ids(statements)
+    if aliases is not None and not aliases.empty:
+        base = apply_symbol_aliases(base, aliases)
     base = base.rename(columns={"statement_id": "source_statement_id"})
+    base["source_statement_id"] = base["source_statement_id"].astype(str)
     required_item_codes = ["net_income", "equity", "operating_profit", "cash", "total_debt"]
     if items.empty:
         pivot = pd.DataFrame(columns=["source_statement_id", *required_item_codes])
     else:
         filtered_items = items[items["item_code"].isin(required_item_codes)].copy()
+        if aliases is not None and not aliases.empty:
+            filtered_items = apply_symbol_aliases(filtered_items, aliases)
         pivot = (
             filtered_items.pivot_table(
                 index="statement_id",
@@ -579,6 +996,7 @@ def _build_financial_snapshots_from_statements(statements: pd.DataFrame, items: 
             .reset_index()
             .rename(columns={"statement_id": "source_statement_id"})
         )
+        pivot["source_statement_id"] = pivot["source_statement_id"].astype(str)
     data = base.merge(pivot, on="source_statement_id", how="left")
     fiscal_period = data.get("fiscal_period", pd.Series(index=data.index, dtype="object")).astype(str)
     quarter = pd.to_numeric(fiscal_period.str.extract(r"Q([1-4])", expand=False), errors="coerce")
@@ -586,11 +1004,48 @@ def _build_financial_snapshots_from_statements(statements: pd.DataFrame, items: 
     inferred_quarter = pd.to_numeric(((period_end.dt.month - 1) // 3) + 1, errors="coerce")
     data["fiscal_quarter"] = quarter.fillna(inferred_quarter)
     data["period_end"] = period_end.dt.date
-    data["announcement_datetime"] = pd.to_datetime(data["announcement_datetime"], errors="coerce")
+    data["announcement_datetime"] = pd.to_datetime(data.get("announcement_datetime"), errors="coerce")
     data["announcement_date"] = pd.to_datetime(data["announcement_date"], errors="coerce").dt.date
     data["source_url"] = data.get("source_url")
+    data["announcement_source_url"] = data.get("announcement_source_url")
     data["raw_hash"] = data.get("raw_hash")
     return data
+
+
+def _ensure_statement_ids(statements: pd.DataFrame) -> pd.DataFrame:
+    repaired = statements.copy()
+    if "statement_id" not in repaired.columns:
+        repaired["statement_id"] = None
+    repaired["statement_id"] = repaired["statement_id"].astype("object")
+    missing_mask = repaired["statement_id"].isna() | (repaired["statement_id"].astype(str).str.strip() == "")
+    if not missing_mask.any():
+        return repaired
+    period_end = pd.to_datetime(repaired.loc[missing_mask, "period_end"], errors="coerce")
+    repaired.loc[missing_mask, "statement_id"] = (
+        "ISYATIRIM-"
+        + repaired.loc[missing_mask, "symbol"].astype(str).str.upper()
+        + "-"
+        + period_end.dt.strftime("%Y%m%d")
+    )
+    return repaired
+
+
+def _read_records_file(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    if suffix == ".json":
+        return pd.DataFrame(pd.read_json(path))
+    raise typer.BadParameter(f"Unsupported source file format: {path.suffix}")
+
+
+def _build_investing_earnings_url(record: dict) -> str:
+    if record.get("earnings_url"):
+        return str(record["earnings_url"])
+    slug = record.get("investing_slug")
+    if slug:
+        return f"https://tr.investing.com/equities/{slug}-earnings"
+    raise typer.BadParameter("record is missing earnings_url and investing_slug")
 
 
 if __name__ == "__main__":

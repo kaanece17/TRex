@@ -26,6 +26,12 @@ data/processed/
 # Generated reports
 reports/*.xlsx
 reports/*.csv
+outputs/
+node_modules
+node_modules/
+src/*.egg-info/
+src/bist_factor_backtest.egg-info/
+outputs_probe.mjs
 
 # Local scratch / debug captures
 bildirim_*.html

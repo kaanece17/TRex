@@ -7,8 +7,8 @@ import yaml
 
 try:
     from pydantic import BaseModel
-except ImportError:
-    BaseModel = object
+except ImportError:  # pragma: no cover
+    BaseModel = object  # pragma: no cover
 
 
 class _FallbackModel:
@@ -46,6 +46,7 @@ class UniverseConfig(_Model):
     symbols_file: Path
     membership_file: Path | None = None
     monthly_snapshot_file: Path | None = None
+    symbol_aliases_file: Path | None = None
     mode: str = "reconstructed_historical"
     fallback_mode: str = "current_static"
     target_index: str = "XUSIN"
@@ -136,6 +137,9 @@ class BacktestConfig(_Model):
                     else None,
                     "monthly_snapshot_file": Path(values["universe"]["monthly_snapshot_file"])
                     if values["universe"].get("monthly_snapshot_file") is not None
+                    else None,
+                    "symbol_aliases_file": Path(values["universe"]["symbol_aliases_file"])
+                    if values["universe"].get("symbol_aliases_file") is not None
                     else None,
                 }
             ),

@@ -39,7 +39,6 @@ KBORU,add,2023-12-14,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1225264
 AGROT,add,2023-11-23,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1219377,high
 EKOS,add,2023-11-21,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1218921,high
 MARBL,add,2023-11-08,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1214893,high
-DOFER,add,2023-10-16,kap_announcement,https://www.kap.org.tr/tr/Bildirim/1205978,high
 DOBUR,remove,2022-06-01,bist_pdf_manual_parse,https://www.borsaistanbul.com/files/duyuru-8911-TR.pdf,medium
 HURGZ,remove,2022-06-01,bist_pdf_manual_parse,https://www.borsaistanbul.com/files/duyuru-8911-TR.pdf,medium
 IHGZT,remove,2022-06-01,bist_pdf_manual_parse,https://www.borsaistanbul.com/files/duyuru-8911-TR.pdf,medium

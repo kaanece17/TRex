@@ -43,7 +43,7 @@ scoring:
   firm_value_mode: market_cap
 
 costs:
-  commission_rate: 0.001
+  commission_rate: 0.0
 
 filters:
   require_positive_equity: true

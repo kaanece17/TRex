@@ -13,6 +13,8 @@ def get_latest_known_financials(
 ) -> pd.DataFrame:
     data = financials.copy()
     data["announcement_datetime"] = pd.to_datetime(data["announcement_datetime"], errors="coerce")
+    if pd.api.types.is_datetime64tz_dtype(data["announcement_datetime"]):
+        data["announcement_datetime"] = data["announcement_datetime"].dt.tz_localize(None)
     data["announcement_date"] = pd.to_datetime(data["announcement_date"], errors="coerce").dt.date
     cutoff = pd.Timestamp(rebalance_datetime)
     if cutoff.tzinfo is not None:
