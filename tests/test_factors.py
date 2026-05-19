@@ -194,6 +194,70 @@ class TestCalculateScores:
         assert result["x1_share"].iloc[0] == pytest.approx(0.3 / 0.38)
         assert result["x2_share"].iloc[0] == pytest.approx(0.08 / 0.38)
 
+    def test_calculateScores_noteBestFitSoftQualityTilt_rewardsStrongerQualityProfile(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "net_income_ttm": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "operating_profit_ttm": 120,
+                    "firm_value": 1500,
+                },
+                {
+                    "net_income": 200,
+                    "net_income_ttm": 80,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 30,
+                    "operating_profit_ttm": 30,
+                    "firm_value": 1500,
+                },
+            ]
+        )
+
+        result = calculate_scores(data, ScoringConfig(formula="note_best_fit_soft_quality_tilt", use_ttm=False))
+
+        assert result["quality_tilt_signal"].iloc[0] > result["quality_tilt_signal"].iloc[1]
+        assert result["score"].iloc[0] > result["score"].iloc[1]
+
+    def test_calculateScores_noteBestFitX2QualityTilt_boostsX2WithQualitySignal(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "net_income_ttm": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "operating_profit_ttm": 120,
+                    "firm_value": 1500,
+                },
+                {
+                    "net_income": 200,
+                    "net_income_ttm": 80,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "operating_profit_ttm": 120,
+                    "firm_value": 1500,
+                },
+            ]
+        )
+
+        baseline = calculate_scores(data, ScoringConfig(formula="note_best_fit", use_ttm=False))
+        tilted = calculate_scores(data, ScoringConfig(formula="note_best_fit_x2_quality_tilt", use_ttm=False))
+
+        assert tilted["quality_tilt_signal"].iloc[0] > tilted["quality_tilt_signal"].iloc[1]
+        assert tilted["score"].iloc[0] > baseline["score"].iloc[0]
+        assert (tilted["score"].iloc[0] - baseline["score"].iloc[0]) > (tilted["score"].iloc[1] - baseline["score"].iloc[1])
+
     def test_calculateScores_selectionScore_addsSmallMomentumRankBonus(self):
         data = pd.DataFrame(
             [
@@ -229,6 +293,136 @@ class TestCalculateScores:
 
         assert result["score"].tolist() == pytest.approx([0.38, 0.38])
         assert result["selection_score"].iloc[1] > result["selection_score"].iloc[0]
+
+    def test_calculateScores_qualityPlusEarnings_rewardsStrongerEarningsSignal(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 120,
+                    "firm_value": 1500,
+                    "ni_ttm_growth_yoy": 0.10,
+                    "op_ttm_growth_yoy": 0.05,
+                    "earnings_acceleration": 0.01,
+                    "profitability_quality_combo": 0.30,
+                },
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 120,
+                    "firm_value": 1500,
+                    "ni_ttm_growth_yoy": 0.45,
+                    "op_ttm_growth_yoy": 0.30,
+                    "earnings_acceleration": 0.10,
+                    "profitability_quality_combo": 0.60,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(
+                formula="quality_plus_earnings",
+                use_ttm=True,
+                growth_mode="raw",
+                earnings_weight=1.0,
+            ),
+        )
+
+        assert result["score"].iloc[1] > result["score"].iloc[0]
+        assert result["earnings_signal"].iloc[1] > result["earnings_signal"].iloc[0]
+
+    def test_calculateScores_noteBestFitPlusEarnings_preservesBaseAndAddsSmallEarningsTieBreak(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                    "ni_ttm_growth_yoy": 0.10,
+                    "op_ttm_growth_yoy": 0.05,
+                    "earnings_acceleration": 0.01,
+                    "profitability_quality_combo": 0.30,
+                },
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                    "ni_ttm_growth_yoy": 0.40,
+                    "op_ttm_growth_yoy": 0.30,
+                    "earnings_acceleration": 0.10,
+                    "profitability_quality_combo": 0.60,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(
+                formula="note_best_fit_plus_earnings",
+                use_ttm=False,
+                earnings_weight=0.1,
+            ),
+        )
+
+        assert result["x1"].iloc[0] == pytest.approx(result["x1"].iloc[1])
+        assert result["x2"].iloc[0] == pytest.approx(result["x2"].iloc[1])
+        assert result["score"].iloc[1] > result["score"].iloc[0]
+        assert result["earnings_signal"].iloc[1] > result["earnings_signal"].iloc[0]
+
+    def test_calculateScores_noteBestFitProduct_usesComponentProduct(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                }
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(formula="note_best_fit_product", use_ttm=False),
+        )
+
+        assert result["x1"].iloc[0] == pytest.approx(0.3)
+        assert result["x2"].iloc[0] == pytest.approx(0.08)
+        assert result["score"].iloc[0] == pytest.approx(0.024)
+
+    def test_calculateScores_noteBestFitHarmonic_usesHarmonicStyleBlend(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income": 200,
+                    "latest_cum_net_income": 150,
+                    "previous_same_quarter_cum_net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 120,
+                    "firm_value": 1500,
+                }
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(formula="note_best_fit_harmonic", use_ttm=False),
+        )
+
+        expected = 2 * 0.3 * 0.08 / (0.3 + 0.08)
+        assert result["score"].iloc[0] == pytest.approx(expected)
 
     def test_calculateScores_selectionScore_appliesCheapValueTrapPenalty(self):
         data = pd.DataFrame(
@@ -373,6 +567,137 @@ class TestApplyFilters:
         assert filtered["symbol"].tolist() == ["BBB"]
         assert rejected["symbol"].tolist() == ["AAA"]
         assert rejected["reason"].tolist() == ["negative_recent_momentum"]
+
+    def test_applyFilters_minMarketCapAndFirmValue_rejectsSmallRows(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "market_cap": 900,
+                    "firm_value": 1500,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "market_cap": 1500,
+                    "firm_value": 900,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                },
+                {
+                    "symbol": "CCC",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "market_cap": 1500,
+                    "firm_value": 1500,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(
+            data,
+            FilterSettings(
+                require_positive_equity=False,
+                require_positive_net_income_ttm=False,
+                require_positive_previous_net_income_ttm=False,
+                require_positive_operating_profit_ttm=False,
+                require_positive_firm_value=False,
+                require_shares_outstanding=False,
+                min_market_cap=1_000,
+                min_firm_value=1_000,
+                min_avg_turnover_20d=0,
+            ),
+        )
+
+        assert filtered["symbol"].tolist() == ["CCC"]
+        assert rejected["symbol"].tolist() == ["AAA", "BBB"]
+        assert rejected["reason"].tolist() == ["small_market_cap", "small_firm_value"]
+
+    def test_applyFilters_extremeEarningsProxy_rejectsHighGrowthAndAcceleration(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "ni_ttm_growth_yoy": 4.0,
+                    "earnings_acceleration": 0.0,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "ni_ttm_growth_yoy": 1.0,
+                    "earnings_acceleration": 5.0,
+                },
+                {
+                    "symbol": "CCC",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "ni_ttm_growth_yoy": 1.0,
+                    "earnings_acceleration": 1.0,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(
+            data,
+            FilterSettings(
+                require_positive_equity=False,
+                require_positive_net_income_ttm=False,
+                require_positive_previous_net_income_ttm=False,
+                require_positive_operating_profit_ttm=False,
+                require_positive_firm_value=False,
+                require_shares_outstanding=False,
+                max_ni_ttm_growth_yoy=3.0,
+                max_earnings_acceleration=4.0,
+                min_avg_turnover_20d=0,
+            ),
+        )
+
+        assert filtered["symbol"].tolist() == ["CCC"]
+        assert rejected["symbol"].tolist() == ["AAA", "BBB"]
+        assert rejected["reason"].tolist() == ["extreme_earnings_growth", "extreme_earnings_acceleration"]
 
     def test_applyFilters_maxNetIncomeToEquity_rejectsExtremeRows(self):
         data = pd.DataFrame(

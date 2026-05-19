@@ -1,8 +1,17 @@
 import pandas as pd
 import pytest
 
-from bist_factor_backtest.backtest.monthly_rotation import run_monthly_rotation_backtest
+from bist_factor_backtest.backtest.monthly_rotation import _apply_rebalance_frequency, run_monthly_rotation_backtest
 from bist_factor_backtest.config import BacktestConfig
+
+
+class TestRebalanceFrequency:
+    def test_applyRebalanceFrequency_bimonthlyAndQuarterly_filtersMonthList(self):
+        months = ["2024-01", "2024-02", "2024-03", "2024-04", "2024-05", "2024-06"]
+
+        assert _apply_rebalance_frequency(months, "monthly") == months
+        assert _apply_rebalance_frequency(months, "bimonthly") == ["2024-01", "2024-03", "2024-05"]
+        assert _apply_rebalance_frequency(months, "quarterly") == ["2024-01", "2024-04"]
 
 
 class TestRunMonthlyRotationBacktest:

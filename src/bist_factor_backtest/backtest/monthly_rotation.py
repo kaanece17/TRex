@@ -31,6 +31,8 @@ def run_monthly_rotation_backtest(
     prices: pd.DataFrame,
     financial_snapshots: pd.DataFrame,
     universe_membership: pd.DataFrame,
+    collect_diagnostics: bool = True,
+    collect_positions: bool = True,
 ) -> dict[str, pd.DataFrame | str]:
     run_id = str(uuid4())
     prepared_prices = prices.copy()
@@ -46,6 +48,7 @@ def run_monthly_rotation_backtest(
     else:
         calendar_prices = prepared_prices
         months = get_backtest_months(calendar_prices, config.backtest.start_date, config.backtest.end_date)
+    months = _apply_rebalance_frequency(months, config.strategy.rebalance_frequency)
     monthly_results = []
     selected_positions = []
     planned_positions = []
@@ -69,9 +72,28 @@ def run_monthly_rotation_backtest(
             config.strategy.market_open_time,
             config.project.timezone,
         )
-        if config.scoring.formula in {"note_exact", "note_best_fit"}:
+        if config.scoring.formula in {
+            "note_exact",
+            "note_best_fit",
+            "note_best_fit_plus_earnings",
+            "note_best_fit_product",
+            "note_best_fit_signed_sqrt_product",
+            "note_best_fit_harmonic",
+            "note_best_fit_soft_quality_tilt",
+            "note_best_fit_x1_quality_tilt",
+            "note_best_fit_x2_quality_tilt",
+        }:
             known = get_latest_known_annual_financials(financial_snapshots, rebalance_datetime, buy_date)
-            if config.scoring.formula == "note_best_fit" and not known.empty:
+            if config.scoring.formula in {
+                "note_best_fit",
+                "note_best_fit_plus_earnings",
+                "note_best_fit_product",
+                "note_best_fit_signed_sqrt_product",
+                "note_best_fit_harmonic",
+                "note_best_fit_soft_quality_tilt",
+                "note_best_fit_x1_quality_tilt",
+                "note_best_fit_x2_quality_tilt",
+            } and not known.empty:
                 known = _attach_note_best_fit_growth_inputs(known, financial_snapshots, rebalance_datetime, buy_date)
         else:
             known = get_latest_known_financials(financial_snapshots, rebalance_datetime, buy_date)
@@ -88,18 +110,21 @@ def run_monthly_rotation_backtest(
             candidates = attach_market_cap_firm_value(candidates, feature_prices, rebalance_datetime)
             candidates = calculate_scores(candidates, config.scoring)
             candidates = _apply_x1_soft_penalty_rule(candidates, config)
-            ranked_all = candidates.sort_values(["selection_score", "score"], ascending=False).reset_index(drop=True)
-            ranked_all["month"] = month
-            ranked_all["rebalance_datetime"] = rebalance_datetime
-            ranked_all["buy_date"] = buy_date
-            ranked_all["sell_date"] = sell_date
-            ranked_all["effective_top_n"] = effective_top_n
-            ranked_all["provisional_rank"] = ranked_all.index + 1
-            candidate_diagnostics.append(ranked_all)
+            candidates = _apply_earnings_quality_soft_penalty_rule(candidates, config)
+            if collect_diagnostics:
+                ranked_all = candidates.sort_values(["selection_score", "score"], ascending=False).reset_index(drop=True)
+                ranked_all["month"] = month
+                ranked_all["rebalance_datetime"] = rebalance_datetime
+                ranked_all["buy_date"] = buy_date
+                ranked_all["sell_date"] = sell_date
+                ranked_all["effective_top_n"] = effective_top_n
+                ranked_all["provisional_rank"] = ranked_all.index + 1
+                candidate_diagnostics.append(ranked_all)
             filter_settings = FilterSettings(**config.filters.model_dump())
             filtered, rejected = apply_filters(candidates, filter_settings)
-            rejected["month"] = month
-            rejected_candidates.append(rejected)
+            if collect_diagnostics:
+                rejected["month"] = month
+                rejected_candidates.append(rejected)
             ranked = filtered.sort_values(["selection_score", "score"], ascending=False)
             selected = _apply_hold_buffer_rule(
                 ranked,
@@ -112,6 +137,7 @@ def run_monthly_rotation_backtest(
             weighting=config.strategy.weighting,
             score_weight_cap=config.strategy.score_weight_cap,
         )
+        positions = _apply_earnings_quality_weight_scaling_rule(positions, config)
         positions = _apply_technical_confirmation_rule(positions, config)
         selection_plan.append(
             {
@@ -152,13 +178,14 @@ def run_monthly_rotation_backtest(
             )
             if position_return is None:
                 position["reason"] = "missing_price"
-                rejected_candidates.append(pd.DataFrame([position]).assign(month=plan["month"]))
+                if collect_diagnostics:
+                    rejected_candidates.append(pd.DataFrame([position]).assign(month=plan["month"]))
                 continue
             position.update(position_return)
             position_returns.append(position)
 
         positions_result = pd.DataFrame(position_returns)
-        if not positions.empty:
+        if collect_diagnostics and not positions.empty:
             planned_snapshot = positions.copy()
             planned_snapshot["run_id"] = run_id
             planned_snapshot["month"] = plan["month"]
@@ -176,11 +203,12 @@ def run_monthly_rotation_backtest(
             gross_return = float((positions_result["weight"] * positions_result["gross_return"]).sum())
             net_return = float((positions_result["weight"] * positions_result["net_return"]).sum())
             selected_symbols = ",".join(positions_result["symbol"].tolist())
-            positions_result["run_id"] = run_id
-            positions_result["month"] = plan["month"]
-            positions_result["used_period_end"] = positions_result["period_end"]
-            positions_result["used_announcement_datetime"] = positions_result["announcement_datetime"]
-            selected_positions.append(positions_result)
+            if collect_positions:
+                positions_result["run_id"] = run_id
+                positions_result["month"] = plan["month"]
+                positions_result["used_period_end"] = positions_result["period_end"]
+                positions_result["used_announcement_datetime"] = positions_result["announcement_datetime"]
+                selected_positions.append(positions_result)
 
         start_value = portfolio_value
         portfolio_value = portfolio_value * (1 + net_return)
@@ -203,11 +231,27 @@ def run_monthly_rotation_backtest(
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "monthly_results": pd.DataFrame(monthly_results),
-        "selected_positions": pd.concat(selected_positions, ignore_index=True) if selected_positions else pd.DataFrame(),
-        "planned_positions": pd.concat(planned_positions, ignore_index=True) if planned_positions else pd.DataFrame(),
-        "rejected_candidates": pd.concat(rejected_candidates, ignore_index=True) if rejected_candidates else pd.DataFrame(),
-        "candidate_diagnostics": pd.concat(candidate_diagnostics, ignore_index=True) if candidate_diagnostics else pd.DataFrame(),
+        "selected_positions": pd.concat(selected_positions, ignore_index=True) if collect_positions and selected_positions else pd.DataFrame(),
+        "planned_positions": pd.concat(planned_positions, ignore_index=True) if collect_diagnostics and planned_positions else pd.DataFrame(),
+        "rejected_candidates": pd.concat(rejected_candidates, ignore_index=True) if collect_diagnostics and rejected_candidates else pd.DataFrame(),
+        "candidate_diagnostics": pd.concat(candidate_diagnostics, ignore_index=True) if collect_diagnostics and candidate_diagnostics else pd.DataFrame(),
     }
+
+
+def _apply_rebalance_frequency(months: list[str], rebalance_frequency: str) -> list[str]:
+    if not months:
+        return months
+
+    normalized = str(rebalance_frequency or "monthly").strip().lower()
+    if normalized == "monthly":
+        step = 1
+    elif normalized in {"bimonthly", "every_2_months", "two_months"}:
+        step = 2
+    elif normalized in {"quarterly", "every_3_months", "three_months"}:
+        step = 3
+    else:
+        step = 1
+    return months[::step]
 
 
 def _resolve_sell_date(
@@ -354,6 +398,89 @@ def _apply_x1_soft_penalty_rule(
     return result
 
 
+def _apply_earnings_quality_soft_penalty_rule(
+    candidates: pd.DataFrame,
+    config: BacktestConfig,
+) -> pd.DataFrame:
+    mode = config.strategy.earnings_quality_soft_penalty_mode
+    if candidates.empty or not mode:
+        return candidates
+    if mode not in {
+        "extreme_growth_or_accel_penalty",
+        "extreme_growth_and_accel_penalty",
+    }:
+        return candidates
+
+    max_growth = config.strategy.earnings_quality_max_ni_ttm_growth_yoy
+    max_accel = config.strategy.earnings_quality_max_acceleration
+    penalty = config.strategy.earnings_quality_soft_penalty_amount
+    if penalty <= 0:
+        return candidates
+
+    result = candidates.copy()
+    growth_mask = pd.Series(False, index=result.index)
+    accel_mask = pd.Series(False, index=result.index)
+    if max_growth is not None and "ni_ttm_growth_yoy" in result.columns:
+        growth_mask = pd.to_numeric(result["ni_ttm_growth_yoy"], errors="coerce").gt(max_growth)
+    if max_accel is not None and "earnings_acceleration" in result.columns:
+        accel_mask = pd.to_numeric(result["earnings_acceleration"], errors="coerce").gt(max_accel)
+
+    if mode == "extreme_growth_or_accel_penalty":
+        penalty_mask = growth_mask | accel_mask
+    else:
+        penalty_mask = growth_mask & accel_mask
+
+    if not penalty_mask.any():
+        return result
+
+    result.loc[penalty_mask, "selection_score"] = (
+        pd.to_numeric(result.loc[penalty_mask, "selection_score"], errors="coerce") - penalty
+    )
+    return result
+
+
+def _apply_earnings_quality_weight_scaling_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+) -> pd.DataFrame:
+    mode = config.strategy.earnings_quality_weight_scale_mode
+    if positions.empty or not mode:
+        return positions
+    if mode not in {
+        "extreme_growth_and_accel_scale",
+        "extreme_growth_or_accel_scale",
+    }:
+        return positions
+
+    max_growth = config.strategy.earnings_quality_max_ni_ttm_growth_yoy
+    max_accel = config.strategy.earnings_quality_max_acceleration
+    scale_factor = config.strategy.earnings_quality_weight_scale_factor
+    if scale_factor <= 0 or scale_factor >= 1:
+        return positions
+
+    result = positions.copy()
+    growth_mask = pd.Series(False, index=result.index)
+    accel_mask = pd.Series(False, index=result.index)
+    if max_growth is not None and "ni_ttm_growth_yoy" in result.columns:
+        growth_mask = pd.to_numeric(result["ni_ttm_growth_yoy"], errors="coerce").gt(max_growth)
+    if max_accel is not None and "earnings_acceleration" in result.columns:
+        accel_mask = pd.to_numeric(result["earnings_acceleration"], errors="coerce").gt(max_accel)
+
+    if mode == "extreme_growth_or_accel_scale":
+        scale_mask = growth_mask | accel_mask
+    else:
+        scale_mask = growth_mask & accel_mask
+
+    if not scale_mask.any():
+        return result
+
+    result.loc[scale_mask, "weight"] = pd.to_numeric(result.loc[scale_mask, "weight"], errors="coerce") * scale_factor
+    total_weight = pd.to_numeric(result["weight"], errors="coerce").sum()
+    if total_weight > 0:
+        result["weight"] = pd.to_numeric(result["weight"], errors="coerce") / total_weight
+    return result
+
+
 def _calculate_universe_breadth_above_sma(
     prices: pd.DataFrame,
     symbols: list[str],
@@ -415,11 +542,59 @@ def _attach_note_best_fit_growth_inputs(
     previous_same_quarter = previous_same_quarter.rename(
         columns={"net_income": "previous_same_quarter_cum_net_income"}
     )
+    previous_year_ttm = known[
+        [
+            "symbol",
+            "fiscal_year",
+            "fiscal_quarter",
+            "net_income_ttm",
+            "operating_profit_ttm",
+            "net_income_growth",
+        ]
+    ].copy()
+    previous_year_ttm["fiscal_year"] = previous_year_ttm["fiscal_year"] + 1
+    previous_year_ttm = previous_year_ttm.rename(
+        columns={
+            "net_income_ttm": "previous_year_net_income_ttm",
+            "operating_profit_ttm": "previous_year_operating_profit_ttm",
+            "net_income_growth": "previous_year_net_income_growth",
+        }
+    )
     latest = latest.merge(previous_same_quarter, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
+    latest = latest.merge(previous_year_ttm, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
     latest = latest.rename(columns={"net_income": "latest_cum_net_income"})
+    latest["ni_ttm_growth_yoy"] = (
+        pd.to_numeric(latest.get("net_income_ttm"), errors="coerce")
+        - pd.to_numeric(latest.get("previous_year_net_income_ttm"), errors="coerce")
+    ) / pd.to_numeric(latest.get("previous_year_net_income_ttm"), errors="coerce")
+    latest["op_ttm_growth_yoy"] = (
+        pd.to_numeric(latest.get("operating_profit_ttm"), errors="coerce")
+        - pd.to_numeric(latest.get("previous_year_operating_profit_ttm"), errors="coerce")
+    ) / pd.to_numeric(latest.get("previous_year_operating_profit_ttm"), errors="coerce")
+    latest["earnings_acceleration"] = (
+        pd.to_numeric(latest.get("net_income_growth"), errors="coerce")
+        - pd.to_numeric(latest.get("previous_year_net_income_growth"), errors="coerce")
+    )
 
+    annual_known = annual_known.drop(
+        columns=[
+            "ni_ttm_growth_yoy",
+            "op_ttm_growth_yoy",
+            "earnings_acceleration",
+        ],
+        errors="ignore",
+    )
     enriched = annual_known.merge(
-        latest[["symbol", "latest_cum_net_income", "previous_same_quarter_cum_net_income"]],
+        latest[
+            [
+                "symbol",
+                "latest_cum_net_income",
+                "previous_same_quarter_cum_net_income",
+                "ni_ttm_growth_yoy",
+                "op_ttm_growth_yoy",
+                "earnings_acceleration",
+            ]
+        ],
         on="symbol",
         how="left",
     )

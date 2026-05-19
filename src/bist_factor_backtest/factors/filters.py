@@ -30,6 +30,10 @@ class FilterSettings:
     min_recent_return_20d: float | None = None
     min_growth_when_x1_dominant_share: float | None = None
     x1_dominant_growth_share_threshold: float | None = None
+    max_ni_ttm_growth_yoy: float | None = None
+    max_earnings_acceleration: float | None = None
+    min_market_cap: float | None = None
+    min_firm_value: float | None = None
     min_avg_turnover_20d: float = 1_000_000
 
 
@@ -86,6 +90,14 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
         )
     if settings.min_recent_return_20d is not None and "recent_return_20d" in result.columns:
         checks.append(("negative_recent_momentum", result["recent_return_20d"] < settings.min_recent_return_20d))
+    if settings.min_market_cap is not None and "market_cap" in result.columns:
+        checks.append(("small_market_cap", result["market_cap"].isna() | (result["market_cap"] < settings.min_market_cap)))
+    if settings.min_firm_value is not None and "firm_value" in result.columns:
+        checks.append(("small_firm_value", result["firm_value"].isna() | (result["firm_value"] < settings.min_firm_value)))
+    if settings.max_ni_ttm_growth_yoy is not None and "ni_ttm_growth_yoy" in result.columns:
+        checks.append(("extreme_earnings_growth", result["ni_ttm_growth_yoy"].isna() | (result["ni_ttm_growth_yoy"] > settings.max_ni_ttm_growth_yoy)))
+    if settings.max_earnings_acceleration is not None and "earnings_acceleration" in result.columns:
+        checks.append(("extreme_earnings_acceleration", result["earnings_acceleration"].isna() | (result["earnings_acceleration"] > settings.max_earnings_acceleration)))
     if (
         settings.min_growth_when_x1_dominant_share is not None
         and settings.x1_dominant_growth_share_threshold is not None

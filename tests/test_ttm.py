@@ -1,6 +1,7 @@
 import pandas as pd
+import pytest
 
-from bist_factor_backtest.factors.ttm import add_quarterly_values, add_ttm_values
+from bist_factor_backtest.factors.ttm import add_earnings_momentum_features, add_quarterly_values, add_ttm_values
 
 
 class TestAddQuarterlyValues:
@@ -212,3 +213,41 @@ class TestAddTtmValues:
         assert q2_2022["net_income_ttm"] == 130
         assert q2_2022["operating_profit_ttm"] == 150
         assert q2_2023["previous_net_income_ttm"] == 130
+
+
+class TestAddEarningsMomentumFeatures:
+    def test_addEarningsMomentumFeatures_previousYearComparableAvailable_computesFeatures(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "ABC",
+                    "period_end": "2023-12-31",
+                    "fiscal_year": 2023,
+                    "fiscal_quarter": 4,
+                    "net_income_ttm": 100,
+                    "operating_profit_ttm": 120,
+                    "net_income_growth": 0.20,
+                    "equity": 500,
+                    "firm_value": 1000,
+                },
+                {
+                    "symbol": "ABC",
+                    "period_end": "2024-12-31",
+                    "fiscal_year": 2024,
+                    "fiscal_quarter": 4,
+                    "net_income_ttm": 130,
+                    "operating_profit_ttm": 150,
+                    "net_income_growth": 0.35,
+                    "equity": 520,
+                    "firm_value": 1040,
+                },
+            ]
+        )
+
+        result = add_earnings_momentum_features(data)
+        current = result[result["fiscal_year"] == 2024].iloc[0]
+
+        assert current["ni_ttm_growth_yoy"] == pytest.approx(0.30)
+        assert current["op_ttm_growth_yoy"] == pytest.approx(0.25)
+        assert current["earnings_acceleration"] == pytest.approx(0.15)
+        assert pd.notna(current["profitability_quality_combo"])

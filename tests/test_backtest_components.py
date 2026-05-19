@@ -5,6 +5,8 @@ import pytest
 
 from bist_factor_backtest.backtest.execution import calculate_position_return_open_to_open
 from bist_factor_backtest.backtest.monthly_rotation import (
+    _apply_earnings_quality_soft_penalty_rule,
+    _apply_earnings_quality_weight_scaling_rule,
     _apply_technical_confirmation_rule,
     _apply_x1_soft_penalty_rule,
 )
@@ -211,6 +213,83 @@ class TestX1SoftPenaltyRule:
         assert result.loc[result["symbol"] == "AAA", "selection_score"].iloc[0] == pytest.approx(0.90)
         assert result.loc[result["symbol"] == "BBB", "selection_score"].iloc[0] == pytest.approx(1.00)
         assert result.loc[result["symbol"] == "CCC", "selection_score"].iloc[0] == pytest.approx(1.00)
+
+    def test_applyEarningsQualitySoftPenaltyRule_penalizesExtremeGrowthAndAcceleration(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "Europe/Istanbul"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {
+                    "name": "BIST_SANAYI",
+                    "source": "csv",
+                    "symbols_file": "symbols.csv",
+                },
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 5,
+                    "earnings_quality_soft_penalty_mode": "extreme_growth_and_accel_penalty",
+                    "earnings_quality_max_ni_ttm_growth_yoy": 3.1,
+                    "earnings_quality_max_acceleration": 4.6,
+                    "earnings_quality_soft_penalty_amount": 0.10,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        candidates = pd.DataFrame(
+            [
+                {"symbol": "AAA", "ni_ttm_growth_yoy": 4.0, "earnings_acceleration": 5.0, "selection_score": 1.00},
+                {"symbol": "BBB", "ni_ttm_growth_yoy": 4.0, "earnings_acceleration": 1.0, "selection_score": 1.00},
+                {"symbol": "CCC", "ni_ttm_growth_yoy": 1.0, "earnings_acceleration": 5.0, "selection_score": 1.00},
+            ]
+        )
+
+        result = _apply_earnings_quality_soft_penalty_rule(candidates, config)
+
+        assert result.loc[result["symbol"] == "AAA", "selection_score"].iloc[0] == pytest.approx(0.90)
+        assert result.loc[result["symbol"] == "BBB", "selection_score"].iloc[0] == pytest.approx(1.00)
+        assert result.loc[result["symbol"] == "CCC", "selection_score"].iloc[0] == pytest.approx(1.00)
+
+    def test_applyEarningsQualityWeightScalingRule_scalesExtremeWeightsAndRenormalizes(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "Europe/Istanbul"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {
+                    "name": "BIST_SANAYI",
+                    "source": "csv",
+                    "symbols_file": "symbols.csv",
+                },
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 5,
+                    "earnings_quality_weight_scale_mode": "extreme_growth_and_accel_scale",
+                    "earnings_quality_max_ni_ttm_growth_yoy": 3.1,
+                    "earnings_quality_max_acceleration": 4.6,
+                    "earnings_quality_weight_scale_factor": 0.5,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AAA", "weight": 0.4, "ni_ttm_growth_yoy": 4.0, "earnings_acceleration": 5.0},
+                {"symbol": "BBB", "weight": 0.3, "ni_ttm_growth_yoy": 4.0, "earnings_acceleration": 1.0},
+                {"symbol": "CCC", "weight": 0.3, "ni_ttm_growth_yoy": 1.0, "earnings_acceleration": 1.0},
+            ]
+        )
+
+        result = _apply_earnings_quality_weight_scaling_rule(positions, config)
+
+        assert result["weight"].sum() == pytest.approx(1.0)
+        assert result.loc[result["symbol"] == "AAA", "weight"].iloc[0] < 0.4
+        assert result.loc[result["symbol"] == "BBB", "weight"].iloc[0] > 0.3
+        assert result.loc[result["symbol"] == "CCC", "weight"].iloc[0] > 0.3
 
     def test_applyTechnicalConfirmationRule_supports20DayLookback(self):
         config = BacktestConfig.model_validate(

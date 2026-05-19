@@ -76,3 +76,60 @@ def add_ttm_values(cumulative: pd.DataFrame) -> pd.DataFrame:
     data = data.merge(previous, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
     data["net_income_growth"] = (data["net_income_ttm"] - data["previous_net_income_ttm"]) / data["previous_net_income_ttm"]
     return data
+
+
+def add_earnings_momentum_features(cumulative: pd.DataFrame) -> pd.DataFrame:
+    data = cumulative.copy()
+    data = data.sort_values(["symbol", "period_end"]).reset_index(drop=True)
+
+    def _series(name: str) -> pd.Series:
+        if name not in data.columns:
+            return pd.Series(float("nan"), index=data.index, dtype="float64")
+        return pd.to_numeric(data[name], errors="coerce")
+
+    previous_year = data[
+        [
+            "symbol",
+            "fiscal_year",
+            "fiscal_quarter",
+            "net_income_ttm",
+            "operating_profit_ttm",
+            "net_income_growth",
+        ]
+    ].copy()
+    previous_year["fiscal_year"] = previous_year["fiscal_year"] + 1
+    previous_year = previous_year.rename(
+        columns={
+            "net_income_ttm": "previous_year_net_income_ttm",
+            "operating_profit_ttm": "previous_year_operating_profit_ttm",
+            "net_income_growth": "previous_year_net_income_growth",
+        }
+    )
+    data = data.merge(previous_year, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
+
+    data["ni_ttm_growth_yoy"] = (
+        _series("net_income_ttm")
+        - pd.to_numeric(data["previous_year_net_income_ttm"], errors="coerce")
+    ) / pd.to_numeric(data["previous_year_net_income_ttm"], errors="coerce")
+    data["op_ttm_growth_yoy"] = (
+        _series("operating_profit_ttm")
+        - pd.to_numeric(data["previous_year_operating_profit_ttm"], errors="coerce")
+    ) / pd.to_numeric(data["previous_year_operating_profit_ttm"], errors="coerce")
+    data["earnings_acceleration"] = (
+        _series("net_income_growth")
+        - pd.to_numeric(data["previous_year_net_income_growth"], errors="coerce")
+    )
+
+    profitability = _series("net_income_ttm") / _series("equity")
+    quality_strength = _series("operating_profit_ttm") / _series("firm_value")
+    earnings_strength = pd.to_numeric(data["ni_ttm_growth_yoy"], errors="coerce")
+    data["profitability_quality_combo"] = profitability + quality_strength + earnings_strength.fillna(0.0)
+
+    return data.drop(
+        columns=[
+            "previous_year_net_income_ttm",
+            "previous_year_operating_profit_ttm",
+            "previous_year_net_income_growth",
+        ],
+        errors="ignore",
+    )

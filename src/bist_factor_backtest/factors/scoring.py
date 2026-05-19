@@ -21,10 +21,19 @@ def calculate_scores(data: pd.DataFrame, scoring: ScoringConfig | None = None) -
         result["x2"] = result["operating_profit"] / result["firm_value"]
         _apply_component_caps(result, scoring)
         _attach_component_shares(result)
-        result["score"] = (result["x1"] * x1_weight) + (result["x2"] * x2_weight)
+        result["score"] = _combine_components(result, formula, x1_weight, x2_weight)
         _attach_selection_score(result, scoring)
         return result
-    if formula == "note_best_fit":
+    if formula in {
+        "note_best_fit",
+        "note_best_fit_plus_earnings",
+        "note_best_fit_product",
+        "note_best_fit_signed_sqrt_product",
+        "note_best_fit_harmonic",
+        "note_best_fit_soft_quality_tilt",
+        "note_best_fit_x1_quality_tilt",
+        "note_best_fit_x2_quality_tilt",
+    }:
         raw_growth = (
             result["latest_cum_net_income"] - result["previous_same_quarter_cum_net_income"]
         ) / result["previous_same_quarter_cum_net_income"]
@@ -33,25 +42,40 @@ def calculate_scores(data: pd.DataFrame, scoring: ScoringConfig | None = None) -
         result["x2"] = result["operating_profit"] / result["firm_value"]
         _apply_component_caps(result, scoring)
         _attach_component_shares(result)
-        result["score"] = (result["x1"] * x1_weight) + (result["x2"] * x2_weight)
+        base_score = _combine_components(result, formula, x1_weight, x2_weight)
+        if formula == "note_best_fit_plus_earnings":
+            earnings_weight = scoring.earnings_weight if scoring is not None else 1.0
+            earnings_signal = _build_earnings_signal(result, scoring)
+            result["earnings_signal"] = earnings_signal
+            result["score"] = base_score + (earnings_signal * earnings_weight)
+        elif formula in {
+            "note_best_fit_soft_quality_tilt",
+            "note_best_fit_x1_quality_tilt",
+            "note_best_fit_x2_quality_tilt",
+        }:
+            quality_signal = _build_soft_quality_signal(result, scoring)
+            result["quality_tilt_signal"] = quality_signal
+            result["score"] = _apply_soft_quality_tilt(formula, weighted_x1=result["x1"] * x1_weight, weighted_x2=result["x2"] * x2_weight, base_score=base_score, quality_signal=quality_signal)
+        else:
+            result["score"] = base_score
         _attach_selection_score(result, scoring)
         return result
     raw_growth = (
         result["net_income_ttm"] - result["previous_net_income_ttm"]
     ) / result["previous_net_income_ttm"]
-    growth_mode = scoring.growth_mode if scoring is not None else "normalized_percent_cap"
-    if growth_mode == "raw":
-        result["net_income_growth"] = raw_growth
-    elif growth_mode == "normalized_percent_cap":
-        normalized_growth = raw_growth.where(raw_growth <= 1.0, raw_growth / 100.0)
-        result["net_income_growth"] = normalized_growth.clip(lower=MIN_GROWTH, upper=MAX_GROWTH)
-    else:
-        raise ValueError(f"Unsupported growth mode: {growth_mode}")
+    result["net_income_growth"] = _normalize_growth_series(raw_growth, scoring)
     result["x1"] = (result["net_income_ttm"] / result["equity"]) * (1 + result["net_income_growth"])
     result["x2"] = result["operating_profit_ttm"] / result["firm_value"]
     _apply_component_caps(result, scoring)
     _attach_component_shares(result)
-    result["score"] = (result["x1"] * x1_weight) + (result["x2"] * x2_weight)
+    base_score = _combine_components(result, formula, x1_weight, x2_weight)
+    if formula == "quality_plus_earnings":
+        earnings_weight = scoring.earnings_weight if scoring is not None else 1.0
+        earnings_signal = _build_earnings_signal(result, scoring)
+        result["earnings_signal"] = earnings_signal
+        result["score"] = base_score + (earnings_signal * earnings_weight)
+    else:
+        result["score"] = base_score
     _attach_selection_score(result, scoring)
     return result
 
@@ -61,6 +85,114 @@ def _apply_component_caps(result: pd.DataFrame, scoring: ScoringConfig | None) -
         return
     _cap_series_at_quantile(result, "x1", scoring.x1_cap_quantile)
     _cap_series_at_quantile(result, "x2", scoring.x2_cap_quantile)
+
+
+def _combine_components(
+    result: pd.DataFrame,
+    formula: str,
+    x1_weight: float,
+    x2_weight: float,
+) -> pd.Series:
+    weighted_x1 = pd.to_numeric(result["x1"], errors="coerce") * x1_weight
+    weighted_x2 = pd.to_numeric(result["x2"], errors="coerce") * x2_weight
+
+    if formula in {"note_exact", "note_best_fit", "note_best_fit_plus_earnings", "x1_plus_x2", "quality_plus_earnings"}:
+        return weighted_x1 + weighted_x2
+    if formula == "note_best_fit_product":
+        return weighted_x1 * weighted_x2
+    if formula == "note_best_fit_signed_sqrt_product":
+        product = weighted_x1 * weighted_x2
+        return product.abs().pow(0.5) * product.apply(lambda v: 1.0 if pd.isna(v) or v >= 0 else -1.0)
+    if formula == "note_best_fit_harmonic":
+        denominator = weighted_x1 + weighted_x2
+        denominator = denominator.where(denominator != 0)
+        return (2 * weighted_x1 * weighted_x2) / denominator
+    return weighted_x1 + weighted_x2
+
+
+def _normalize_growth_series(series: pd.Series, scoring: ScoringConfig | None) -> pd.Series:
+    growth_mode = scoring.growth_mode if scoring is not None else "normalized_percent_cap"
+    if growth_mode == "raw":
+        return series
+    if growth_mode == "normalized_percent_cap":
+        normalized_growth = series.where(series <= 1.0, series / 100.0)
+        return normalized_growth.clip(lower=MIN_GROWTH, upper=MAX_GROWTH)
+    raise ValueError(f"Unsupported growth mode: {growth_mode}")
+
+
+def _build_earnings_signal(result: pd.DataFrame, scoring: ScoringConfig | None) -> pd.Series:
+    def _series(name: str) -> pd.Series:
+        if name not in result.columns:
+            return pd.Series(pd.NA, index=result.index, dtype="float64")
+        return pd.to_numeric(result[name], errors="coerce")
+
+    feature_map = {
+        "ni_ttm_growth_yoy": _normalize_growth_series(_series("ni_ttm_growth_yoy"), scoring),
+        "op_ttm_growth_yoy": _normalize_growth_series(_series("op_ttm_growth_yoy"), scoring),
+        "earnings_acceleration": _normalize_growth_series(_series("earnings_acceleration"), scoring),
+        "profitability_quality_combo": _series("profitability_quality_combo"),
+    }
+    ranked_features: list[pd.Series] = []
+    for name, series in feature_map.items():
+        working = pd.to_numeric(series, errors="coerce")
+        if name != "profitability_quality_combo":
+            working = working.clip(lower=MIN_GROWTH, upper=MAX_GROWTH)
+        if working.notna().sum() == 0:
+            continue
+        ranked_features.append(working.rank(method="average", pct=True))
+    if not ranked_features:
+        return pd.Series(0.0, index=result.index)
+    combined_rank = pd.concat(ranked_features, axis=1).mean(axis=1, skipna=True)
+    return (combined_rank.fillna(0.5) - 0.5) * 2.0
+
+
+def _build_soft_quality_signal(result: pd.DataFrame, scoring: ScoringConfig | None) -> pd.Series:
+    def _series(name: str) -> pd.Series:
+        if name not in result.columns:
+            return pd.Series(pd.NA, index=result.index, dtype="float64")
+        return pd.to_numeric(result[name], errors="coerce")
+
+    profitability = _series("net_income_ttm")
+    if profitability.isna().all():
+        profitability = _series("net_income")
+    profitability = profitability / _series("equity")
+
+    quality_strength = _series("operating_profit_ttm")
+    if quality_strength.isna().all():
+        quality_strength = _series("operating_profit")
+    quality_strength = quality_strength / _series("firm_value")
+
+    growth_strength = _series("net_income_growth")
+    normalized_growth = _normalize_growth_series(growth_strength, scoring).clip(lower=MIN_GROWTH, upper=MAX_GROWTH)
+
+    ranked_features: list[pd.Series] = []
+    for series in [profitability, quality_strength, normalized_growth]:
+        working = pd.to_numeric(series, errors="coerce")
+        if working.notna().sum() == 0:
+            continue
+        ranked_features.append(working.rank(method="average", pct=True))
+    if not ranked_features:
+        return pd.Series(0.0, index=result.index)
+    combined_rank = pd.concat(ranked_features, axis=1).mean(axis=1, skipna=True)
+    return (combined_rank.fillna(0.5) - 0.5) * 2.0
+
+
+def _apply_soft_quality_tilt(
+    formula: str,
+    *,
+    weighted_x1: pd.Series,
+    weighted_x2: pd.Series,
+    base_score: pd.Series,
+    quality_signal: pd.Series,
+) -> pd.Series:
+    tilt = 1.0 + (quality_signal.clip(lower=-1.0, upper=1.0) * 0.10)
+    if formula == "note_best_fit_soft_quality_tilt":
+        return base_score * tilt
+    if formula == "note_best_fit_x1_quality_tilt":
+        return (weighted_x1 * tilt) + weighted_x2
+    if formula == "note_best_fit_x2_quality_tilt":
+        return weighted_x1 + (weighted_x2 * tilt)
+    return base_score
 
 
 def _attach_component_shares(result: pd.DataFrame) -> None:

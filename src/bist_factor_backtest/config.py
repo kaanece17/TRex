@@ -85,6 +85,12 @@ class StrategyConfig(_Model):
     x1_soft_penalty_share_threshold: float | None = None
     x1_soft_penalty_return_60d_threshold: float | None = None
     x1_soft_penalty_amount: float = 0.0
+    earnings_quality_soft_penalty_mode: str | None = None
+    earnings_quality_max_ni_ttm_growth_yoy: float | None = None
+    earnings_quality_max_acceleration: float | None = None
+    earnings_quality_soft_penalty_amount: float = 0.0
+    earnings_quality_weight_scale_mode: str | None = None
+    earnings_quality_weight_scale_factor: float = 1.0
 
 
 class ScoringConfig(_Model):
@@ -94,6 +100,7 @@ class ScoringConfig(_Model):
     growth_mode: str = "normalized_percent_cap"
     x1_weight: float = 1.0
     x2_weight: float = 1.0
+    earnings_weight: float = 1.0
     momentum_rank_weight: float = 0.0
     cheap_value_trap_penalty: float = 0.0
     cheap_value_trap_fv_to_equity_threshold: float | None = None
@@ -120,6 +127,10 @@ class FiltersConfig(_Model):
     min_recent_return_20d: float | None = None
     min_growth_when_x1_dominant_share: float | None = None
     x1_dominant_growth_share_threshold: float | None = None
+    max_ni_ttm_growth_yoy: float | None = None
+    max_earnings_acceleration: float | None = None
+    min_market_cap: float | None = None
+    min_firm_value: float | None = None
     min_avg_turnover_20d: float = 1_000_000
 
 

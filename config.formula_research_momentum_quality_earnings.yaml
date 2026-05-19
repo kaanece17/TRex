@@ -1,5 +1,5 @@
 project:
-  name: bist_monthly_factor_rotation
+  name: bist_momentum_quality_earnings
   timezone: Europe/Istanbul
 
 data:
@@ -42,18 +42,15 @@ strategy:
   weighting: equal_weight
   score_weight_cap:
   if_less_than_top_n: use_available
-  earnings_quality_weight_scale_mode: extreme_growth_and_accel_scale
-  earnings_quality_max_ni_ttm_growth_yoy: 3.1
-  earnings_quality_max_acceleration: 4.6
-  earnings_quality_weight_scale_factor: 0.5
 
 scoring:
-  formula: note_best_fit
-  use_ttm: false
+  formula: quality_plus_earnings
+  use_ttm: true
   firm_value_mode: market_cap
   growth_mode: raw
   x1_weight: 1.0
   x2_weight: 1.0
+  earnings_weight: 1.0
   x1_cap_quantile: 0.95
   x2_cap_quantile: 0.95
 

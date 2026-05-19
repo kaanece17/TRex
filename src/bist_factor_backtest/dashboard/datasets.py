@@ -281,9 +281,28 @@ def build_next_month_preview(
     cutoff_dt = datetime.combine(basis_date, time(23, 59), tzinfo=ZoneInfo(config.project.timezone))
     preview_rebalance_dt = datetime.combine(preview_reference_date, time(0, 0), tzinfo=ZoneInfo(config.project.timezone))
 
-    if config.scoring.formula in {"note_exact", "note_best_fit"}:
+    if config.scoring.formula in {
+        "note_exact",
+        "note_best_fit",
+        "note_best_fit_plus_earnings",
+        "note_best_fit_product",
+        "note_best_fit_signed_sqrt_product",
+        "note_best_fit_harmonic",
+        "note_best_fit_soft_quality_tilt",
+        "note_best_fit_x1_quality_tilt",
+        "note_best_fit_x2_quality_tilt",
+    }:
         known = get_latest_known_annual_financials(financial_snapshots, cutoff_dt, preview_reference_date)
-        if config.scoring.formula == "note_best_fit" and not known.empty:
+        if config.scoring.formula in {
+            "note_best_fit",
+            "note_best_fit_plus_earnings",
+            "note_best_fit_product",
+            "note_best_fit_signed_sqrt_product",
+            "note_best_fit_harmonic",
+            "note_best_fit_soft_quality_tilt",
+            "note_best_fit_x1_quality_tilt",
+            "note_best_fit_x2_quality_tilt",
+        } and not known.empty:
             known = _attach_note_best_fit_growth_inputs(known, financial_snapshots, cutoff_dt, preview_reference_date)
     else:
         known = get_latest_known_financials(financial_snapshots, cutoff_dt, preview_reference_date)

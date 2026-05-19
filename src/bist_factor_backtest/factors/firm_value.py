@@ -26,6 +26,7 @@ def attach_market_cap_firm_value(
     )
     data = data.merge(latest_prices, on="symbol", how="left")
     market_cap = data["firm_value_price"] * data["shares_outstanding"]
+    data["market_cap"] = market_cap
     debt = pd.to_numeric(data.get("total_debt"), errors="coerce")
     cash = pd.to_numeric(data.get("cash"), errors="coerce")
     data["firm_value"] = market_cap + debt - cash
