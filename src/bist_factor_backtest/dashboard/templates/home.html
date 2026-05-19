@@ -7,6 +7,9 @@
       <h1>{{ summary.profile_label or "Dashboard" }}</h1>
       <p class="muted">
         Son veri ayi {{ summary.latest_data_month | fmt_month }}.
+        {% if summary.preview_month %}
+        Sonraki ay preview {{ summary.preview_month | fmt_month }} (baz: {{ summary.preview_basis_date or "-" }}).
+        {% endif %}
         {% if summary.latest_selected_month %}
         Son kapanmis pozisyon ayi {{ summary.latest_selected_month | fmt_month }}.
         {% endif %}
@@ -59,6 +62,32 @@
   </section>
 
   <section class="content-grid">
+    {% if refresh_status %}
+    <article class="surface-card status-card status-{{ refresh_status.status or 'unknown' }}">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Refresh</span>
+          <h2>Son Job Durumu</h2>
+        </div>
+      </div>
+      <div class="regime-stack">
+        <div class="regime-line">
+          <span class="badge badge-regime badge-regime-{{ 'high' if refresh_status.status == 'failed' else ('medium' if refresh_status.status in ['running', 'skipped'] else 'low') }}">
+            {{ refresh_status.status or "unknown" }}
+          </span>
+          <strong>{{ refresh_status.job_type or "-" }}</strong>
+        </div>
+        <p class="muted">{{ refresh_status.message or "Refresh durumu kaydi yok." }}</p>
+        {% if refresh_status.current_step %}
+        <p class="muted">Adim: {{ refresh_status.current_step }}</p>
+        {% endif %}
+        {% if refresh_status.log_file %}
+        <p class="muted">Log: {{ refresh_status.log_file }}</p>
+        {% endif %}
+      </div>
+    </article>
+    {% endif %}
+
     <article class="surface-card regime-card regime-{{ current_regime.regime_risk or 'unknown' }}">
       <div class="section-head">
         <div>
@@ -162,7 +191,7 @@
       <div>
         <span class="eyebrow">Pozisyonlar</span>
         <h2>Guncel Ay Listesi</h2>
-        <p class="muted">{{ summary.current_month | fmt_month }}</p>
+        <p class="muted">{{ (summary.current_display_month or summary.current_month) | fmt_month }}</p>
       </div>
       <a class="action-link" href="/positions?config={{ selected_profile }}">Tumunu ac</a>
     </div>

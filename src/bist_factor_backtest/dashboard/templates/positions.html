@@ -8,6 +8,9 @@
       <p class="muted">
         Gosterilen ay {{ selected_month | fmt_month }}.
         Son veri ayi {{ summary.latest_data_month | fmt_month }}.
+        {% if summary.preview_month and selected_month == summary.preview_month %}
+        Bu liste ay sonu kapanisina gore uretilen sonraki ay preview listesidir.
+        {% endif %}
       </p>
     </div>
     <form method="get" action="/positions" class="filter-grid">
@@ -39,6 +42,24 @@
       <button type="submit" class="primary-button">Uygula</button>
     </form>
   </section>
+
+  {% if refresh_status and refresh_status.status == "failed" %}
+  <section class="surface-card status-card status-failed">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Refresh</span>
+        <h2>Son Job Basarisiz</h2>
+      </div>
+    </div>
+    <p class="muted">{{ refresh_status.message or "Refresh basarisiz oldu." }}</p>
+    {% if refresh_status.current_step %}
+    <p class="muted">Adim: {{ refresh_status.current_step }}</p>
+    {% endif %}
+    {% if refresh_status.log_file %}
+    <p class="muted">Log: {{ refresh_status.log_file }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
 
   {% if alerts %}
   <section class="surface-card warning-card">

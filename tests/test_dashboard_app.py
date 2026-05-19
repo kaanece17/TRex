@@ -32,12 +32,27 @@ class TestDashboardApp:
             ),
             encoding="utf-8",
         )
+        (root / "refresh_status.json").write_text(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "message": "Ay sonu refresh basarisiz oldu: build-dashboard",
+                    "log_file": "/opt/trex-dashboard/refresh-month-end-test.log",
+                    "job_type": "month_end",
+                    "current_step": "build-dashboard",
+                }
+            ),
+            encoding="utf-8",
+        )
         files = {
             "summary.json": {
                 "run_id": "run-1",
                 "current_month": "2026-05",
+                "current_display_month": "2026-06",
                 "latest_data_month": "2026-05",
                 "latest_selected_month": "2026-04",
+                "preview_month": "2026-06",
+                "preview_basis_date": "2026-05-29",
                 "final_capital": 1000,
                 "total_return": 0.2,
                 "best_month": "2026-04",
@@ -114,6 +129,25 @@ class TestDashboardApp:
                     "confidence_level": "winner",
                 }
             ],
+            "next_month_preview.json": [
+                {
+                    "month": "2026-06",
+                    "symbol": "CCC",
+                    "score": 1.2,
+                    "x1": 0.7,
+                    "x2": 0.5,
+                    "x1_share": 0.58,
+                    "x2_share": 0.42,
+                    "selection_score": 1.2,
+                    "position_status_detail": "Sonraki ay preview listesi (ay sonu kapanisina gore)",
+                    "confidence_level": "neutral",
+                    "repeat_count": 2,
+                    "avg_net_return": 0.02,
+                    "win_rate": 0.5,
+                }
+            ],
+            "next_month_preview_alerts.json": [],
+            "next_month_preview_stale_bases.json": [],
         }
         for name, payload in files.items():
             (profile_dir / name).write_text(json.dumps(payload), encoding="utf-8")
@@ -141,17 +175,15 @@ class TestDashboardApp:
 
         home = client.get("/")
         assert home.status_code == 200
-        assert "AAA" in home.text
-        assert "BBB" in home.text
-        assert "MERKO" in home.text
-        assert "announcement_date" in home.text
-        assert "Riskli Rejim" in home.text
+        assert "CCC" in home.text
         assert "Son veri ayi 2026 / 05." in home.text
+        assert "Sonraki ay preview 2026 / 06 (baz: 2026-05-29)." in home.text
+        assert "Ay sonu refresh basarisiz oldu: build-dashboard" in home.text
 
-        positions = client.get("/positions?config=accepted_top6&year=2026&month=05")
+        positions = client.get("/positions?config=accepted_top6&year=2026&month=06")
         assert positions.status_code == 200
-        assert "Guncel Eski Annual Baz Uyarilari" in positions.text
-        assert "Ay Basi Rejimi" in positions.text
+        assert "Bu liste ay sonu kapanisina gore uretilen sonraki ay preview listesidir." in positions.text
+        assert "Son Job Basarisiz" in positions.text
 
         missing = client.get("/missing-financials?config=accepted_top6&year=2026&month=05")
         assert missing.status_code == 200

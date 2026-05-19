@@ -1,18 +1,38 @@
 from __future__ import annotations
 
+import calendar
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from bist_factor_backtest.backtest.monthly_rotation import _calculate_universe_breadth_above_sma
+from bist_factor_backtest.backtest.monthly_rotation import (
+    _apply_hold_buffer_rule,
+    _apply_technical_confirmation_rule,
+    _apply_x1_soft_penalty_rule,
+    _attach_note_best_fit_growth_inputs,
+    _attach_universe_metadata,
+    _calculate_universe_breadth_above_sma,
+    _resolve_effective_top_n,
+)
 from bist_factor_backtest.backtest.metrics import calculate_summary
+from bist_factor_backtest.backtest.portfolio import build_positions
 from bist_factor_backtest.config import BacktestConfig
+from bist_factor_backtest.data.calendar import get_last_trading_day
+from bist_factor_backtest.data.point_in_time import get_latest_known_annual_financials, get_latest_known_financials
 from bist_factor_backtest.data.universe import get_universe_for_date
 from bist_factor_backtest.dashboard.profiles import DashboardProfile, active_dashboard_profiles
-from bist_factor_backtest.factors.filters import missing_financial_fields
+from bist_factor_backtest.factors.filters import FilterSettings, apply_filters, missing_financial_fields
+from bist_factor_backtest.factors.firm_value import attach_market_cap_firm_value
+from bist_factor_backtest.factors.liquidity import (
+    attach_avg_turnover_20d,
+    attach_recent_return_20d,
+    attach_recent_return_60d,
+)
+from bist_factor_backtest.factors.scoring import calculate_scores
 
 
 @dataclass(frozen=True)
@@ -50,6 +70,7 @@ def build_profile_dashboard_dataset(
     result: dict[str, pd.DataFrame | str],
     prices: pd.DataFrame | None = None,
     membership: pd.DataFrame | None = None,
+    financial_snapshots: pd.DataFrame | None = None,
 ) -> RefreshStatus:
     monthly_results = _normalize_dates(result["monthly_results"])
     selected_positions = _normalize_dates(result["selected_positions"])
@@ -57,6 +78,21 @@ def build_profile_dashboard_dataset(
     rejected_candidates = _normalize_dates(result["rejected_candidates"])
     candidate_diagnostics = _normalize_dates(result["candidate_diagnostics"])
     monthly_regimes = build_monthly_regimes(config, monthly_results, prices, membership)
+    preview = build_next_month_preview(
+        config=config,
+        prices=prices,
+        financial_snapshots=financial_snapshots,
+        membership=membership,
+        planned_positions=planned_positions,
+    )
+    preview_positions = preview["positions"]
+    preview_missing_financials = preview["missing_financials"]
+    preview_month = preview["preview_month"]
+    preview_basis_date = preview["basis_date"]
+    preview_regime = preview["regime"]
+    if not preview_regime.empty:
+        monthly_regimes = pd.concat([monthly_regimes, preview_regime], ignore_index=True)
+        monthly_regimes = monthly_regimes.drop_duplicates(subset=["month"], keep="last")
 
     profile_dir = output_root / profile.id
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +114,10 @@ def build_profile_dashboard_dataset(
     planned_with_confidence = planned_positions.merge(symbol_confidence, on="symbol", how="left") if not planned_positions.empty else planned_positions.copy()
     if not planned_with_confidence.empty:
         planned_with_confidence["confidence_level"] = planned_with_confidence["confidence_level"].fillna("neutral")
+    preview_with_confidence = preview_positions.merge(symbol_confidence, on="symbol", how="left") if not preview_positions.empty else preview_positions.copy()
+    if not preview_with_confidence.empty:
+        preview_with_confidence["confidence_level"] = preview_with_confidence["confidence_level"].fillna("neutral")
+        preview_with_confidence = _finalize_display_positions(preview_with_confidence)
     rejected_with_rank = _attach_provisional_rank(rejected_candidates, candidate_diagnostics)
     display_positions = build_display_positions(
         planned_with_confidence,
@@ -87,19 +127,36 @@ def build_profile_dashboard_dataset(
     )
     display_positions = _attach_monthly_regimes(display_positions, monthly_regimes)
     missing_financials = build_missing_financials(rejected_with_rank)
-    summary = build_summary(config, monthly_results, display_positions, selected_with_confidence, monthly_regimes)
+    summary = build_summary(
+        config,
+        monthly_results,
+        display_positions,
+        selected_with_confidence,
+        monthly_regimes,
+        preview_available=bool(preview_month),
+        preview_positions=preview_with_confidence,
+    )
     current_month_alerts = build_current_month_alerts(missing_financials, summary["current_month"])
     summary["profile_id"] = profile.id
     summary["profile_label"] = profile.label
     summary["config_path"] = str(profile.config_path)
     summary["run_id"] = str(result["run_id"])
     summary["generated_at"] = datetime.now(UTC).isoformat()
+    summary["preview_month"] = preview_month
+    summary["preview_basis_date"] = preview_basis_date
+    summary["current_display_month"] = preview_month or summary["current_month"]
+    summary["current_display_mode"] = "preview" if preview_month else "current"
 
     files = {
         "summary.json": summary,
         "monthly_returns.json": _records(monthly_results),
         "monthly_regimes.json": _records(monthly_regimes),
         "selected_positions.json": _records(display_positions),
+        "next_month_preview.json": _records(preview_with_confidence),
+        "next_month_preview_alerts.json": _records(preview_missing_financials),
+        "next_month_preview_stale_bases.json": _records(
+            build_stale_financial_base_alerts(preview_with_confidence, preview_month)
+        ),
         "missing_financials.json": _records(missing_financials),
         "current_month_alerts.json": _records(current_month_alerts),
         "current_month_stale_bases.json": _records(build_stale_financial_base_alerts(display_positions, summary["current_month"])),
@@ -126,6 +183,8 @@ def build_summary(
     display_positions: pd.DataFrame,
     realized_positions: pd.DataFrame,
     monthly_regimes: pd.DataFrame,
+    preview_available: bool = False,
+    preview_positions: pd.DataFrame | None = None,
 ) -> dict[str, object]:
     latest_data_month = str(monthly_results["month"].iloc[-1]) if not monthly_results.empty else None
     all_months = (
@@ -134,17 +193,25 @@ def build_summary(
         else []
     )
     latest_selected_month = all_months[-2] if len(all_months) >= 2 else (all_months[-1] if all_months else None)
-    realized_monthly_results = (
-        monthly_results[monthly_results["month"].astype(str) != latest_data_month].copy()
-        if latest_data_month is not None and len(all_months) >= 2
-        else monthly_results
-    )
+    if preview_available:
+        latest_selected_month = latest_data_month or latest_selected_month
+        realized_monthly_results = monthly_results.copy()
+    else:
+        realized_monthly_results = (
+            monthly_results[monthly_results["month"].astype(str) != latest_data_month].copy()
+            if latest_data_month is not None and len(all_months) >= 2
+            else monthly_results
+        )
     summary = calculate_summary(realized_monthly_results, config.backtest.initial_capital)
     current_month = latest_data_month or latest_selected_month
     current_positions = (
-        display_positions[display_positions["month"] == current_month]
-        if current_month is not None and not display_positions.empty
-        else display_positions.iloc[0:0]
+        preview_positions
+        if preview_available and preview_positions is not None
+        else (
+            display_positions[display_positions["month"] == current_month]
+            if current_month is not None and not display_positions.empty
+            else display_positions.iloc[0:0]
+        )
     )
     current_regime = _monthly_regime_lookup(monthly_regimes, current_month)
     return {
@@ -153,7 +220,7 @@ def build_summary(
         "latest_data_month": latest_data_month,
         "latest_selected_month": latest_selected_month,
         "metrics_through_month": latest_selected_month or latest_data_month,
-        "open_month_excluded_from_metrics": bool(latest_data_month is not None and len(all_months) >= 2),
+        "open_month_excluded_from_metrics": False if preview_available else bool(latest_data_month is not None and len(all_months) >= 2),
         "position_count": int(len(display_positions)),
         "current_month_position_count": int(len(current_positions)),
         "unique_symbol_count": int(display_positions["symbol"].nunique()) if not display_positions.empty else 0,
@@ -162,6 +229,185 @@ def build_summary(
         "current_regime_note": current_regime.get("regime_note"),
         "current_regime_breadth_200d": current_regime.get("breadth_200d"),
     }
+
+
+def build_next_month_preview(
+    *,
+    config: BacktestConfig,
+    prices: pd.DataFrame | None,
+    financial_snapshots: pd.DataFrame | None,
+    membership: pd.DataFrame | None,
+    planned_positions: pd.DataFrame,
+) -> dict[str, object]:
+    empty_positions = pd.DataFrame()
+    empty_missing = pd.DataFrame(
+        columns=["month", "symbol", "score", "selection_score", "provisional_rank", "missing_fields", "rejection_reason"]
+    )
+    empty_regime = pd.DataFrame(
+        columns=["month", "buy_date", "breadth_200d", "regime_key", "regime_label", "regime_risk", "regime_note"]
+    )
+    if (
+        prices is None
+        or financial_snapshots is None
+        or membership is None
+        or prices.empty
+        or financial_snapshots.empty
+        or membership.empty
+    ):
+        return {"positions": empty_positions, "missing_financials": empty_missing, "preview_month": None, "basis_date": None, "regime": empty_regime}
+
+    price_dates = pd.to_datetime(prices["date"], errors="coerce").dropna()
+    if price_dates.empty:
+        return {"positions": empty_positions, "missing_financials": empty_missing, "preview_month": None, "basis_date": None, "regime": empty_regime}
+
+    normalized_prices = prices.copy()
+    normalized_prices["date"] = pd.to_datetime(normalized_prices["date"], errors="coerce").dt.date
+    normalized_prices = normalized_prices[normalized_prices["date"].notna()].copy()
+    if normalized_prices.empty:
+        return {"positions": empty_positions, "missing_financials": empty_missing, "preview_month": None, "basis_date": None, "regime": empty_regime}
+
+    latest_month = price_dates.dt.strftime("%Y-%m").max()
+    today_local = datetime.now(ZoneInfo(config.project.timezone)).date()
+    current_month = today_local.strftime("%Y-%m")
+    latest_month_is_closed = latest_month < current_month
+    if latest_month == current_month:
+        latest_month_is_closed = today_local.day == calendar.monthrange(today_local.year, today_local.month)[1]
+    if not latest_month_is_closed:
+        return {"positions": empty_positions, "missing_financials": empty_missing, "preview_month": None, "basis_date": None, "regime": empty_regime}
+
+    basis_date = get_last_trading_day(normalized_prices, latest_month)
+    preview_reference_date = (basis_date.replace(day=1) + timedelta(days=32)).replace(day=1)
+    preview_month = preview_reference_date.strftime("%Y-%m")
+    cutoff_dt = datetime.combine(basis_date, time(23, 59), tzinfo=ZoneInfo(config.project.timezone))
+    preview_rebalance_dt = datetime.combine(preview_reference_date, time(0, 0), tzinfo=ZoneInfo(config.project.timezone))
+
+    if config.scoring.formula in {"note_exact", "note_best_fit"}:
+        known = get_latest_known_annual_financials(financial_snapshots, cutoff_dt, preview_reference_date)
+        if config.scoring.formula == "note_best_fit" and not known.empty:
+            known = _attach_note_best_fit_growth_inputs(known, financial_snapshots, cutoff_dt, preview_reference_date)
+    else:
+        known = get_latest_known_financials(financial_snapshots, cutoff_dt, preview_reference_date)
+
+    universe = get_universe_for_date(membership, config.universe.name, preview_reference_date)
+    candidates = known[known["symbol"].isin(universe)].copy()
+    candidates = _attach_universe_metadata(candidates, membership, config.universe.name, preview_reference_date)
+    if candidates.empty:
+        return {
+            "positions": empty_positions,
+            "missing_financials": empty_missing,
+            "preview_month": preview_month,
+            "basis_date": basis_date.isoformat(),
+            "regime": _build_preview_regime(config, normalized_prices, membership, preview_month, preview_reference_date),
+        }
+
+    candidates = attach_avg_turnover_20d(candidates, normalized_prices, preview_reference_date)
+    candidates = attach_recent_return_20d(candidates, normalized_prices, preview_reference_date)
+    candidates = attach_recent_return_60d(candidates, normalized_prices, preview_reference_date)
+    candidates = attach_market_cap_firm_value(candidates, normalized_prices, preview_rebalance_dt)
+    candidates = calculate_scores(candidates, config.scoring)
+    candidates = _apply_x1_soft_penalty_rule(candidates, config)
+
+    effective_top_n = _resolve_effective_top_n(config, normalized_prices, universe, preview_reference_date)
+    ranked_all = candidates.sort_values(["selection_score", "score"], ascending=False).reset_index(drop=True)
+    ranked_all["month"] = preview_month
+    ranked_all["provisional_rank"] = ranked_all.index + 1
+    ranked_all["effective_top_n"] = effective_top_n
+
+    filter_settings = FilterSettings(**config.filters.model_dump())
+    filtered, rejected = apply_filters(candidates, filter_settings)
+    rejected["month"] = preview_month
+    rejected = rejected.merge(
+        ranked_all[["month", "symbol", "selection_score", "score", "provisional_rank", "effective_top_n"]],
+        on=["month", "symbol", "selection_score", "score"],
+        how="left",
+    )
+    missing_financials = build_missing_financials(rejected)
+
+    ranked = filtered.sort_values(["selection_score", "score"], ascending=False)
+    previous_symbols = set()
+    if not planned_positions.empty and "month" in planned_positions.columns:
+        latest_planned_month = str(planned_positions["month"].dropna().astype(str).max())
+        previous_symbols = set(
+            planned_positions[planned_positions["month"].astype(str) == latest_planned_month]["symbol"].astype(str).tolist()
+        )
+    selected = _apply_hold_buffer_rule(
+        ranked,
+        previous_symbols,
+        effective_top_n,
+        config.strategy.hold_buffer_rank,
+    )
+    positions = build_positions(
+        selected,
+        weighting=config.strategy.weighting,
+        score_weight_cap=config.strategy.score_weight_cap,
+    )
+    positions = _apply_technical_confirmation_rule(positions, config)
+
+    preview_regime = _build_preview_regime(config, normalized_prices, membership, preview_month, preview_reference_date)
+    if positions.empty:
+        return {
+            "positions": empty_positions,
+            "missing_financials": missing_financials,
+            "preview_month": preview_month,
+            "basis_date": basis_date.isoformat(),
+            "regime": preview_regime,
+        }
+
+    positions = positions.copy()
+    positions["month"] = preview_month
+    positions["buy_date"] = None
+    positions["sell_date"] = None
+    positions["used_period_end"] = positions["period_end"]
+    positions["used_announcement_date"] = pd.to_datetime(
+        positions.get("announcement_datetime"), errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
+    if "announcement_date" in positions.columns:
+        fallback_dates = pd.to_datetime(positions["announcement_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        positions["used_announcement_date"] = positions["used_announcement_date"].fillna(fallback_dates)
+    positions["position_status"] = "preview"
+    positions["position_status_detail"] = "Sonraki ay preview listesi (ay sonu kapanisina gore)"
+    positions["gross_return"] = None
+    positions["net_return"] = None
+    positions["buy_price"] = None
+    positions["sell_price"] = None
+    positions["preview_basis_date"] = basis_date.isoformat()
+    positions = _finalize_display_positions(positions)
+    positions = _attach_monthly_regimes(positions, preview_regime)
+
+    return {
+        "positions": positions,
+        "missing_financials": missing_financials,
+        "preview_month": preview_month,
+        "basis_date": basis_date.isoformat(),
+        "regime": preview_regime,
+    }
+
+
+def _build_preview_regime(
+    config: BacktestConfig,
+    prices: pd.DataFrame,
+    membership: pd.DataFrame,
+    preview_month: str,
+    preview_reference_date: date,
+) -> pd.DataFrame:
+    universe = get_universe_for_date(membership, config.universe.name, preview_reference_date)
+    breadth = _calculate_universe_breadth_above_sma(
+        prices=prices,
+        symbols=universe,
+        as_of_date=preview_reference_date,
+        lookback_days=200,
+    )
+    regime = _classify_regime(breadth)
+    return pd.DataFrame(
+        [
+            {
+                "month": preview_month,
+                "buy_date": preview_reference_date.isoformat(),
+                "breadth_200d": breadth,
+                **regime,
+            }
+        ]
+    )
 
 
 def build_display_positions(

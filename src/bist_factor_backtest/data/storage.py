@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS market_prices (
     volume DOUBLE
 );
 
+CREATE TABLE IF NOT EXISTS market_open_captures (
+    symbol TEXT,
+    trade_date DATE,
+    bar_timestamp TIMESTAMP,
+    market_open_time TEXT,
+    open_price DOUBLE,
+    source TEXT,
+    interval TEXT,
+    source_status TEXT,
+    source_message TEXT,
+    captured_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS universe_membership (
     symbol TEXT,
     universe_name TEXT,

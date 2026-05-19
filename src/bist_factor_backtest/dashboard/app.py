@@ -53,11 +53,17 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             "monthly_returns": _load_json(profile_dir / "monthly_returns.json", []),
             "monthly_regimes": _load_json(profile_dir / "monthly_regimes.json", []),
             "selected_positions": _load_json(profile_dir / "selected_positions.json", []),
+            "next_month_preview": _load_json(profile_dir / "next_month_preview.json", []),
+            "next_month_preview_alerts": _load_json(profile_dir / "next_month_preview_alerts.json", []),
+            "next_month_preview_stale_bases": _load_json(profile_dir / "next_month_preview_stale_bases.json", []),
             "missing_financials": _load_json(profile_dir / "missing_financials.json", []),
             "current_month_alerts": _load_json(profile_dir / "current_month_alerts.json", []),
             "current_month_stale_bases": _load_json(profile_dir / "current_month_stale_bases.json", []),
             "symbol_confidence": _load_json(profile_dir / "symbol_confidence.json", []),
         }
+
+    def load_refresh_status() -> dict[str, object]:
+        return _load_json(app_settings.dashboard_data_root / "refresh_status.json", {})
 
     def ensure_auth(request: Request) -> RedirectResponse | None:
         if request.session.get("authenticated"):
@@ -125,12 +131,21 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         manifest = load_manifest()
         profile_id = selected_profile(request, manifest)
         profile_data = load_profile_data(profile_id) if profile_id else {}
+        preview_month = profile_data.get("summary", {}).get("preview_month")
         current_month = profile_data.get("summary", {}).get("current_month")
-        current_positions = [
-            row for row in profile_data.get("selected_positions", [])
-            if row.get("month") == current_month
-        ]
-        current_positions = _dedupe_positions_for_open_month(current_positions, current_month)
+        display_month = preview_month or current_month
+        if preview_month and profile_data.get("next_month_preview"):
+            current_positions = profile_data.get("next_month_preview", [])
+            current_alerts = profile_data.get("next_month_preview_alerts", [])
+            current_stale_bases = profile_data.get("next_month_preview_stale_bases", [])
+        else:
+            current_positions = [
+                row for row in profile_data.get("selected_positions", [])
+                if row.get("month") == current_month
+            ]
+            current_positions = _dedupe_positions_for_open_month(current_positions, current_month)
+            current_alerts = profile_data.get("current_month_alerts", [])
+            current_stale_bases = profile_data.get("current_month_stale_bases", [])
         return templates.TemplateResponse(
             request,
             "home.html",
@@ -139,9 +154,10 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
                 "selected_profile": profile_id,
                 "summary": profile_data.get("summary", {}),
                 "current_positions": current_positions,
-                "current_alerts": profile_data.get("current_month_alerts", []),
-                "current_stale_bases": profile_data.get("current_month_stale_bases", []),
-                "current_regime": regime_for_month(profile_data, current_month),
+                "current_alerts": current_alerts,
+                "current_stale_bases": current_stale_bases,
+                "current_regime": regime_for_month(profile_data, display_month),
+                "refresh_status": load_refresh_status(),
             },
         )
 
@@ -154,22 +170,32 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         profile_id = selected_profile(request, manifest)
         profile_data = load_profile_data(profile_id) if profile_id else {}
         all_positions = profile_data.get("selected_positions", [])
+        preview_month = profile_data.get("summary", {}).get("preview_month")
         months = sorted({str(row.get("month")) for row in all_positions if row.get("month")})
+        if preview_month:
+            months = sorted(set(months + [str(preview_month)]))
         years = sorted({month[:4] for month in months})
         selected_year = request.query_params.get("year")
         selected_month_num = request.query_params.get("month")
         if selected_year and selected_month_num:
             target = f"{selected_year}-{selected_month_num.zfill(2)}"
         else:
-            target = profile_data.get("summary", {}).get("current_month")
+            target = preview_month or profile_data.get("summary", {}).get("current_month")
         selected_year = selected_year or (target[:4] if target else None)
         selected_month_num = selected_month_num or (target[-2:] if target else None)
-        positions_for_month = [row for row in all_positions if row.get("month") == target]
+        if preview_month and target == preview_month:
+            positions_for_month = profile_data.get("next_month_preview", [])
+        else:
+            positions_for_month = [row for row in all_positions if row.get("month") == target]
         if target == profile_data.get("summary", {}).get("current_month"):
             positions_for_month = _dedupe_positions_for_open_month(positions_for_month, target)
         latest_data_month = profile_data.get("summary", {}).get("latest_data_month") or profile_data.get("summary", {}).get("current_month")
-        current_alerts = profile_data.get("current_month_alerts", []) if target == latest_data_month else []
-        stale_base_alerts = profile_data.get("current_month_stale_bases", []) if target == latest_data_month else []
+        if preview_month and target == preview_month:
+            current_alerts = profile_data.get("next_month_preview_alerts", [])
+            stale_base_alerts = profile_data.get("next_month_preview_stale_bases", [])
+        else:
+            current_alerts = profile_data.get("current_month_alerts", []) if target == latest_data_month else []
+            stale_base_alerts = profile_data.get("current_month_stale_bases", []) if target == latest_data_month else []
         month_regime = regime_for_month(profile_data, target)
         return templates.TemplateResponse(
             request,
@@ -187,6 +213,7 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
                 "alerts": current_alerts,
                 "stale_base_alerts": stale_base_alerts,
                 "month_regime": month_regime,
+                "refresh_status": load_refresh_status(),
             },
         )
 

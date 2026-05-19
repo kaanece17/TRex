@@ -132,6 +132,22 @@ body {
   backdrop-filter: blur(20px);
 }
 
+.status-card.status-failed {
+  border-color: rgba(255, 104, 104, 0.45);
+  background:
+    linear-gradient(135deg, rgba(255, 104, 104, 0.12), transparent 58%),
+    var(--surface-strong);
+}
+
+.status-card.status-running,
+.status-card.status-skipped {
+  border-color: rgba(255, 208, 92, 0.45);
+}
+
+.status-card.status-success {
+  border-color: rgba(48, 188, 125, 0.35);
+}
+
 .hero-card {
   display: grid;
   gap: 18px;

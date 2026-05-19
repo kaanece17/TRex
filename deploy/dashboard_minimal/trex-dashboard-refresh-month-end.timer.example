@@ -1,0 +1,10 @@
+[Unit]
+Description=Run TRex Dashboard month-end refresh (Istanbul evening)
+
+[Timer]
+OnCalendar=*-*-28,29,30,31 20:00:00 Europe/Istanbul
+Persistent=true
+Unit=trex-dashboard-refresh-month-end.service
+
+[Install]
+WantedBy=timers.target

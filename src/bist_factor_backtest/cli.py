@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import UTC, date, datetime
 import hashlib
 import json
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -43,6 +44,7 @@ from bist_factor_backtest.data.investing_registry import (
 from bist_factor_backtest.data.mkk_esirket_announcements import MKK_ESIR_SOURCES, MkkEsirketAnnouncementsLoader
 from bist_factor_backtest.data.listing_gap_audit import build_listing_gap_audit, load_listing_dates
 from bist_factor_backtest.data.kap_loader import KapFinancialLoader, KapNameResolutionError
+from bist_factor_backtest.data.open_price_capture_yfinance import YFinanceOpenPriceCaptureLoader
 from bist_factor_backtest.data.index_announcements import fetch_reconstructed_xusin_membership
 from bist_factor_backtest.data.price_loader_yfinance import YFinancePriceLoader
 from bist_factor_backtest.data.symbol_aliases import apply_symbol_aliases, load_symbol_aliases
@@ -80,6 +82,42 @@ def load_prices(config: Path = Path("config.yaml")) -> None:
     prices = YFinancePriceLoader().load(symbols, start_date, settings.backtest.end_date)
     storage.replace_table("market_prices", prices)
     storage.close()
+
+
+@app.command()
+def capture_first_open_prices(
+    config: Path = Path("config.yaml"),
+    trade_date: str | None = None,
+    interval: str = "1m",
+) -> None:
+    settings = load_config(config)
+    capture_date = (
+        date.fromisoformat(trade_date)
+        if trade_date is not None
+        else datetime.now(ZoneInfo(settings.project.timezone)).date()
+    )
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    captures = YFinanceOpenPriceCaptureLoader().load(
+        symbols,
+        capture_date,
+        market_open_time=settings.strategy.market_open_time,
+        timezone=settings.project.timezone,
+        interval=interval,
+    )
+    storage.connection.execute(
+        "DELETE FROM market_open_captures WHERE trade_date = ? AND source = ? AND interval = ?",
+        [capture_date, "yfinance_intraday", interval],
+    )
+    if not captures.empty:
+        storage.append_table("market_open_captures", captures)
+    storage.close()
+    typer.echo(
+        f"captured={int((captures['source_status'] == 'captured').sum()) if not captures.empty else 0} "
+        f"missing={int((captures['source_status'] != 'captured').sum()) if not captures.empty else 0} "
+        f"trade_date={capture_date.isoformat()} interval={interval}"
+    )
 
 
 @app.command()
@@ -1018,7 +1056,17 @@ def build_dashboard(
             if not result["selected_positions"].empty:
                 storage.append_table("backtest_selected_positions", result["selected_positions"])
             storage.close()
-            statuses.append(build_profile_dashboard_dataset(root, profile, settings, result, prices=prices, membership=membership))
+            statuses.append(
+                build_profile_dashboard_dataset(
+                    root,
+                    profile,
+                    settings,
+                    result,
+                    prices=prices,
+                    membership=membership,
+                    financial_snapshots=financials,
+                )
+            )
         except Exception as error:
             statuses.append(empty_status(profile, str(error)))
     write_dashboard_manifest(root, statuses)

@@ -1,0 +1,16 @@
+[Unit]
+Description=TRex Dashboard Month-End Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trexdash
+Group=trexdash
+WorkingDirectory=/opt/trex-dashboard
+ExecStart=/opt/trex-dashboard/check_last_day.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trex-dashboard
