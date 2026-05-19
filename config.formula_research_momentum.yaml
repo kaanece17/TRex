@@ -1,0 +1,75 @@
+project:
+  name: bist_monthly_factor_rotation
+  timezone: Europe/Istanbul
+
+data:
+  storage: duckdb
+  duckdb_path: data/bist_backtest.duckdb
+  price_preload_start: "2019-12-01"
+  financial_preload_start: "2018-01-01"
+
+universe:
+  name: BIST_SANAYI
+  source: csv
+  symbols_file: data/universe/bist_sanayi_symbols.csv
+  membership_file: data/universe/bist_sanayi_membership.csv
+  monthly_snapshot_file: data/universe/bist_sanayi_monthly_snapshot.csv
+  symbol_aliases_file: data/universe/bist_sanayi_symbol_aliases.csv
+  mode: reconstructed_historical
+  fallback_mode: current_static
+  target_index: XUSIN
+  target_group: sector
+  reconstruction_required: true
+
+point_in_time:
+  cutoff_mode: market_open
+  if_only_date_available: previous_day_only
+
+strategy:
+  top_n: 5
+  hold_buffer_rank:
+  regime_filter_mode:
+  regime_filter_top_n:
+  regime_filter_lookback_days: 200
+  regime_filter_breadth_threshold: 0.5
+  rebalance_frequency: monthly
+  rebalance_day: first_trading_day
+  rebalance_time: market_open
+  market_open_time: "10:00"
+  buy_rule: first_trading_day_open
+  sell_rule: last_trading_day_open
+  execution_mode: rebalance_open_to_open
+  weighting: equal_weight
+  score_weight_cap:
+  if_less_than_top_n: use_available
+
+scoring:
+  formula: note_best_fit
+  use_ttm: false
+  firm_value_mode: market_cap
+  growth_mode: raw
+  x1_weight: 1.0
+  x2_weight: 1.0
+  x1_cap_quantile: 0.95
+  x2_cap_quantile: 0.95
+
+costs:
+  commission_rate: 0.002
+
+filters:
+  require_positive_equity: true
+  require_positive_net_income_ttm: false
+  require_positive_previous_net_income_ttm: false
+  require_positive_operating_profit_ttm: false
+  require_positive_firm_value: true
+  require_shares_outstanding: true
+  max_net_income_to_equity:
+  x1_dominant_share_threshold: 0.90
+  recent_return_20d_threshold: 0.0
+  min_recent_return_20d: 0.0
+  min_avg_turnover_20d: 0
+
+backtest:
+  start_date: "2020-01-01"
+  end_date: "2026-12-31"
+  initial_capital: 100000

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="stack page-shell">
+  <section class="hero-card compact-hero">
+    <div class="hero-copy">
+      <span class="eyebrow">Kapsam</span>
+      <h1>Eksik Finansallar</h1>
+      <p class="muted">Aciklanma tarihi dahil eksik zorunlu alanlar yuzunden elenen sembolleri izler.</p>
+    </div>
+    <form method="get" action="/missing-financials" class="filter-grid">
+      <div class="field">
+        <label for="config">Profil</label>
+        <select id="config" name="config">
+          {% for profile in manifest.profiles %}
+          <option value="{{ profile.profile_id }}" {% if profile.profile_id == selected_profile %}selected{% endif %}>{{ profile.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="year">Yil</label>
+        <select id="year" name="year">
+          <option value="">Hepsi</option>
+          {% for year in years %}
+          <option value="{{ year }}" {% if year == selected_year %}selected{% endif %}>{{ year }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="month">Ay</label>
+        <select id="month" name="month">
+          <option value="">Hepsi</option>
+          {% for month in range(1, 13) %}
+          {% set month_num = "%02d"|format(month) %}
+          <option value="{{ month_num }}" {% if month_num == selected_month_num %}selected{% endif %}>{{ month_num }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="primary-button">Uygula</button>
+    </form>
+  </section>
+
+  <section class="surface-card">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Denetim</span>
+        <h2>Eksik Alan Kaydi</h2>
+        {% if selected_month %}
+        <p class="muted">{{ selected_month | fmt_month }} filtresi uygulanmis.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% if rows %}
+    <div class="table-shell">
+      <table class="data-table responsive-table">
+        <thead>
+          <tr>
+            <th>Ay</th>
+            <th>Sembol</th>
+            <th>Gecici Sira</th>
+            <th>Skor</th>
+            <th>Eksik Alanlar</th>
+            <th>Neden</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td data-label="Ay">{{ row.month | fmt_month }}</td>
+            <td data-label="Sembol"><strong>{{ row.symbol }}</strong></td>
+            <td data-label="Gecici Sira">{{ row.provisional_rank | fmt_num }}</td>
+            <td data-label="Skor">{{ row.score | fmt_num }}</td>
+            <td data-label="Eksik Alanlar">{{ row.missing_fields | join(", ") }}</td>
+            <td data-label="Neden">{{ row.rejection_reason or "-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-state">Bu filtre icin eksik finansal kaydi yok.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

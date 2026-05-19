@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="login-shell">
+  <section class="login-card">
+    <span class="eyebrow">Guvenli Giris</span>
+    <h1>TRex Admin</h1>
+    <p class="muted">Aktif formula profilleri icin statik yonetim paneli.</p>
+    {% if error %}
+    <p class="error">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/admin/login" class="stack">
+      <div class="field">
+        <label for="password">Sifre</label>
+        <input id="password" type="password" name="password" required>
+      </div>
+      <button type="submit" class="primary-button wide-button">Giris Yap</button>
+    </form>
+  </section>
+</section>
+{% endblock %}

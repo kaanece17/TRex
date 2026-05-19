@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="stack page-shell">
+  <section class="hero-card">
+    <div class="hero-copy">
+      <span class="eyebrow">Genel Bakis</span>
+      <h1>{{ summary.profile_label or "Dashboard" }}</h1>
+      <p class="muted">
+        Son veri ayi {{ summary.latest_data_month | fmt_month }}.
+        {% if summary.preview_month %}
+        Sonraki ay preview {{ summary.preview_month | fmt_month }} (baz: {{ summary.preview_basis_date or "-" }}).
+        {% endif %}
+        {% if summary.latest_selected_month %}
+        Son kapanmis pozisyon ayi {{ summary.latest_selected_month | fmt_month }}.
+        {% endif %}
+        {% if summary.open_month_excluded_from_metrics %}
+        Performans metrikleri {{ summary.metrics_through_month | fmt_month }} sonuna kadar hesaplandi.
+        {% endif %}
+      </p>
+    </div>
+    <form method="get" action="/" class="panel-filter">
+      <label for="profile">Profil</label>
+      <select id="profile" name="config" onchange="this.form.submit()">
+        {% for profile in manifest.profiles %}
+        <option value="{{ profile.profile_id }}" {% if profile.profile_id == selected_profile %}selected{% endif %}>{{ profile.label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </section>
+
+  <section class="metric-grid">
+    <article class="metric-card">
+      <span class="metric-label">Calisma ID</span>
+      <strong class="metric-value metric-code">{{ summary.run_id or "-" }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Son Sermaye</span>
+      <strong class="metric-value">{{ summary.final_capital | fmt_num }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Toplam Carpani</span>
+      <strong class="metric-value">
+        {% if summary.final_capital and summary.initial_capital %}
+        {{ (summary.final_capital / summary.initial_capital) | fmt_num }}x
+        {% else %}
+        -
+        {% endif %}
+      </strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Bilesik Getiri</span>
+      <strong class="metric-value">{{ summary.cagr | fmt_pct }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Maks Dusus</span>
+      <strong class="metric-value">{{ summary.max_drawdown | fmt_pct }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Kazanma Orani</span>
+      <strong class="metric-value">{{ summary.win_rate | fmt_pct }}</strong>
+    </article>
+  </section>
+
+  <section class="content-grid">
+    {% if refresh_status %}
+    <article class="surface-card status-card status-{{ refresh_status.status or 'unknown' }}">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Refresh</span>
+          <h2>Son Job Durumu</h2>
+        </div>
+      </div>
+      <div class="regime-stack">
+        <div class="regime-line">
+          <span class="badge badge-regime badge-regime-{{ 'high' if refresh_status.status == 'failed' else ('medium' if refresh_status.status in ['running', 'skipped'] else 'low') }}">
+            {{ refresh_status.status or "unknown" }}
+          </span>
+          <strong>{{ refresh_status.job_type or "-" }}</strong>
+        </div>
+        <p class="muted">{{ refresh_status.message or "Refresh durumu kaydi yok." }}</p>
+        {% if refresh_status.current_step %}
+        <p class="muted">Adim: {{ refresh_status.current_step }}</p>
+        {% endif %}
+        {% if refresh_status.log_file %}
+        <p class="muted">Log: {{ refresh_status.log_file }}</p>
+        {% endif %}
+      </div>
+    </article>
+    {% endif %}
+
+    <article class="surface-card regime-card regime-{{ current_regime.regime_risk or 'unknown' }}">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Rejim</span>
+          <h2>Guncel Piyasa Durumu</h2>
+        </div>
+      </div>
+      <div class="regime-stack">
+        <div class="regime-line">
+          <span class="badge badge-regime badge-regime-{{ current_regime.regime_risk or 'unknown' }}">
+            {{ current_regime.regime_label or "Rejim bilinmiyor" }}
+          </span>
+          <strong>{{ (current_regime.breadth_200d if current_regime else summary.current_regime_breadth_200d) | fmt_pct }}</strong>
+        </div>
+        <p class="muted">{{ current_regime.regime_note or summary.current_regime_note or "Guncel rejim verisi henuz hesaplanmadi." }}</p>
+      </div>
+    </article>
+
+    <article class="surface-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Durum</span>
+          <h2>Genel Ozet</h2>
+        </div>
+      </div>
+      <dl class="detail-grid">
+        <div>
+          <dt>Son Veri Ayi</dt>
+          <dd>{{ summary.latest_data_month | fmt_month }}</dd>
+        </div>
+        <div>
+          <dt>Son Kapanmis Pozisyon Ayi</dt>
+          <dd>{{ summary.latest_selected_month | fmt_month }}</dd>
+        </div>
+        <div>
+          <dt>En Iyi Ay</dt>
+          <dd>{{ summary.best_month | fmt_month }}</dd>
+        </div>
+        <div>
+          <dt>En Kotu Ay</dt>
+          <dd>{{ summary.worst_month | fmt_month }}</dd>
+        </div>
+        <div>
+          <dt>Toplam Pozisyon</dt>
+          <dd>{{ summary.position_count | fmt_num }}</dd>
+        </div>
+        <div>
+          <dt>Farkli Sembol</dt>
+          <dd>{{ summary.unique_symbol_count | fmt_num }}</dd>
+        </div>
+      </dl>
+    </article>
+
+    <article class="surface-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Uyarilar</span>
+          <h2>Guncel Eksik Finansal Uyarilari</h2>
+        </div>
+      </div>
+      {% if current_alerts %}
+      <div class="warning-list">
+        {% for row in current_alerts %}
+        <div class="warning-item">
+          <strong>{{ row.symbol }}</strong>
+          <span>Gecici sira {{ row.provisional_rank | fmt_num }}</span>
+          <p>Eksik alanlar: {{ row.missing_fields | join(", ") }}</p>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-state">Guncel ay icin eksik finansal uyarisi yok.</p>
+      {% endif %}
+    </article>
+
+    <article class="surface-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Tazelik</span>
+          <h2>Guncel Eski Annual Baz Uyarilari</h2>
+        </div>
+      </div>
+      {% if current_stale_bases %}
+      <div class="warning-list">
+        {% for row in current_stale_bases %}
+        <div class="warning-item">
+          <strong>{{ row.symbol }}</strong>
+          <span>{{ row.used_period_label or "-" }}</span>
+          <p>{{ row.financial_base_quarter_lag | fmt_num }} ceyrek geriden geliyor.</p>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-state">Guncel ay icin eski annual baz uyarisi yok.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="surface-card">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Pozisyonlar</span>
+        <h2>Guncel Ay Listesi</h2>
+        <p class="muted">{{ (summary.current_display_month or summary.current_month) | fmt_month }}</p>
+      </div>
+      <a class="action-link" href="/positions?config={{ selected_profile }}">Tumunu ac</a>
+    </div>
+    {% if current_positions %}
+    <div class="table-shell">
+      <table class="data-table responsive-table">
+        <thead>
+          <tr>
+            <th>Sembol</th>
+            <th>Skor</th>
+            <th>X1</th>
+            <th>X2</th>
+            <th>Durum</th>
+            <th>Guven</th>
+            <th>Tekrar</th>
+            <th>Ort. Getiri</th>
+            <th>Kazanma</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in current_positions %}
+          <tr class="confidence-{{ row.confidence_level }}">
+            <td data-label="Sembol"><strong>{{ row.symbol }}</strong></td>
+            <td data-label="Skor">{{ row.score | fmt_num }}</td>
+            <td data-label="X1">{{ row.x1 | fmt_num }}</td>
+            <td data-label="X2">{{ row.x2 | fmt_num }}</td>
+            <td data-label="Durum">{{ row.position_status_detail or "-" }}</td>
+            <td data-label="Guven">
+              <span class="badge badge-{{ row.confidence_level }}">{{ row.confidence_level | confidence_label }}</span>
+            </td>
+            <td data-label="Tekrar">{{ row.repeat_count | fmt_num }}</td>
+            <td data-label="Ort. Getiri">{{ row.avg_net_return | fmt_pct }}</td>
+            <td data-label="Kazanma">{{ row.win_rate | fmt_pct }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-state">Guncel ay icin secili pozisyon yok.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

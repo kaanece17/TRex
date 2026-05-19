@@ -4,6 +4,16 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+REQUIRED_FINANCIAL_FIELDS = [
+    "period_end",
+    "equity",
+    "net_income_ttm",
+    "previous_net_income_ttm",
+    "operating_profit_ttm",
+    "shares_outstanding",
+    "announcement_date",
+]
+
 
 @dataclass(frozen=True)
 class FilterSettings:
@@ -14,6 +24,12 @@ class FilterSettings:
     require_positive_operating_profit_ttm: bool = True
     require_positive_firm_value: bool = True
     require_shares_outstanding: bool = True
+    max_net_income_to_equity: float | None = None
+    x1_dominant_share_threshold: float | None = None
+    recent_return_20d_threshold: float | None = None
+    min_recent_return_20d: float | None = None
+    min_growth_when_x1_dominant_share: float | None = None
+    x1_dominant_growth_share_threshold: float | None = None
     min_avg_turnover_20d: float = 1_000_000
 
 
@@ -23,14 +39,7 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
 
     checks = []
     if settings.require_complete_financial_snapshot:
-        required_columns = [
-            "period_end",
-            "equity",
-            "net_income_ttm",
-            "previous_net_income_ttm",
-            "operating_profit_ttm",
-            "shares_outstanding",
-        ]
+        required_columns = REQUIRED_FINANCIAL_FIELDS[:-1]
         missing_mask = pd.Series(False, index=result.index)
         for column in required_columns:
             if column not in result.columns:
@@ -58,6 +67,38 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
         checks.append(("negative_firm_value", result["firm_value"].isna() | (result["firm_value"] <= 0)))
     if settings.require_shares_outstanding:
         checks.append(("missing_shares_outstanding", result["shares_outstanding"].isna() | (result["shares_outstanding"] <= 0)))
+    if settings.max_net_income_to_equity is not None:
+        income_column = "net_income" if "net_income" in result.columns else "net_income_ttm"
+        roe_like = result[income_column] / result["equity"]
+        checks.append(("excessive_net_income_to_equity", roe_like > settings.max_net_income_to_equity))
+    if (
+        settings.x1_dominant_share_threshold is not None
+        and settings.recent_return_20d_threshold is not None
+        and "x1_share" in result.columns
+        and "recent_return_20d" in result.columns
+    ):
+        checks.append(
+            (
+                "x1_dominant_negative_momentum",
+                (result["x1_share"] >= settings.x1_dominant_share_threshold)
+                & (result["recent_return_20d"] < settings.recent_return_20d_threshold),
+            )
+        )
+    if settings.min_recent_return_20d is not None and "recent_return_20d" in result.columns:
+        checks.append(("negative_recent_momentum", result["recent_return_20d"] < settings.min_recent_return_20d))
+    if (
+        settings.min_growth_when_x1_dominant_share is not None
+        and settings.x1_dominant_growth_share_threshold is not None
+        and "x1_share" in result.columns
+        and "net_income_growth" in result.columns
+    ):
+        checks.append(
+            (
+                "x1_dominant_low_growth",
+                (result["x1_share"] >= settings.x1_dominant_growth_share_threshold)
+                & (result["net_income_growth"] < settings.min_growth_when_x1_dominant_share),
+            )
+        )
     checks.append(("low_liquidity", result["avg_turnover_20d"] < settings.min_avg_turnover_20d))
 
     rejected_indexes = set()
@@ -71,3 +112,17 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
     filtered = result[~result.index.isin(rejected_indexes)].copy()
     rejected_data = pd.concat(rejected, ignore_index=True) if rejected else result.iloc[0:0].assign(reason=pd.Series(dtype=str))
     return filtered.reset_index(drop=True), rejected_data.reset_index(drop=True)
+
+
+def missing_financial_fields(row: pd.Series) -> list[str]:
+    missing: list[str] = []
+    for field in REQUIRED_FINANCIAL_FIELDS:
+        if field == "announcement_date":
+            announcement_date = row.get("announcement_date")
+            if pd.isna(announcement_date):
+                missing.append(field)
+            continue
+        value = row.get(field)
+        if pd.isna(value):
+            missing.append(field)
+    return missing

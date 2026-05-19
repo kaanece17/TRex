@@ -1,20 +1,38 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+import hashlib
+import json
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import typer
+import uvicorn
 
 from bist_factor_backtest.backtest.monthly_rotation import run_monthly_rotation_backtest
 from bist_factor_backtest.config import load_config
+from bist_factor_backtest.dashboard.app import create_app
+from bist_factor_backtest.dashboard.datasets import (
+    build_profile_dashboard_dataset,
+    dashboard_root,
+    empty_status,
+    write_dashboard_manifest,
+)
+from bist_factor_backtest.dashboard.profiles import active_dashboard_profiles
+from bist_factor_backtest.dashboard.settings import load_admin_settings
 from bist_factor_backtest.data.coverage_audit import (
     build_alternative_coverage_audit,
     build_alternative_fill_queue,
     summarize_alternative_coverage,
 )
 from bist_factor_backtest.data.earnings_investing import InvestingEarningsLoader, merge_announcements_into_statements
+from bist_factor_backtest.data.financials_fallback_registry import (
+    FinancialFallbackRegistryLoader,
+    load_financial_fallback_registry,
+    record_to_statement_rows,
+)
 from bist_factor_backtest.data.issuer_ir_announcements import ISSUER_IR_SOURCES, IssuerIRAnnouncementsLoader
 from bist_factor_backtest.data.financials_isyatirim import IsYatirimFinancialLoader
 from bist_factor_backtest.data.investing_registry import (
@@ -26,6 +44,7 @@ from bist_factor_backtest.data.investing_registry import (
 from bist_factor_backtest.data.mkk_esirket_announcements import MKK_ESIR_SOURCES, MkkEsirketAnnouncementsLoader
 from bist_factor_backtest.data.listing_gap_audit import build_listing_gap_audit, load_listing_dates
 from bist_factor_backtest.data.kap_loader import KapFinancialLoader, KapNameResolutionError
+from bist_factor_backtest.data.open_price_capture_yfinance import YFinanceOpenPriceCaptureLoader
 from bist_factor_backtest.data.index_announcements import fetch_reconstructed_xusin_membership
 from bist_factor_backtest.data.price_loader_yfinance import YFinancePriceLoader
 from bist_factor_backtest.data.symbol_aliases import apply_symbol_aliases, load_symbol_aliases
@@ -66,10 +85,47 @@ def load_prices(config: Path = Path("config.yaml")) -> None:
 
 
 @app.command()
+def capture_first_open_prices(
+    config: Path = Path("config.yaml"),
+    trade_date: str | None = None,
+    interval: str = "1m",
+) -> None:
+    settings = load_config(config)
+    capture_date = (
+        date.fromisoformat(trade_date)
+        if trade_date is not None
+        else datetime.now(ZoneInfo(settings.project.timezone)).date()
+    )
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    captures = YFinanceOpenPriceCaptureLoader().load(
+        symbols,
+        capture_date,
+        market_open_time=settings.strategy.market_open_time,
+        timezone=settings.project.timezone,
+        interval=interval,
+    )
+    storage.connection.execute(
+        "DELETE FROM market_open_captures WHERE trade_date = ? AND source = ? AND interval = ?",
+        [capture_date, "yfinance_intraday", interval],
+    )
+    if not captures.empty:
+        storage.append_table("market_open_captures", captures)
+    storage.close()
+    typer.echo(
+        f"captured={int((captures['source_status'] == 'captured').sum()) if not captures.empty else 0} "
+        f"missing={int((captures['source_status'] != 'captured').sum()) if not captures.empty else 0} "
+        f"trade_date={capture_date.isoformat()} interval={interval}"
+    )
+
+
+@app.command()
 def load_financials_kap(
     config: Path = Path("config.yaml"),
     strict: bool = False,
     only_incomplete: bool = False,
+    symbols_override: list[str] | None = None,
     max_retries: int = 5,
     backoff_seconds: float = 1.5,
     request_timeout_seconds: int = 20,
@@ -78,7 +134,9 @@ def load_financials_kap(
     preflight_checks: int = 3,
 ) -> None:
     settings = load_config(config)
-    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    symbols = symbols_override or load_static_universe(
+        settings.universe.symbols_file, settings.universe.symbol_aliases_file
+    )
     if only_incomplete:
         symbols = _filter_only_incomplete_symbols(symbols, settings.data.duckdb_path)
     start_date = settings.data.financial_preload_start or settings.backtest.start_date
@@ -255,7 +313,8 @@ def load_financials_isyatirim(
             failures.append(result.failures)
             _upsert_symbol_load_status(storage, symbol, "incomplete", "isyatirim_missing_records")
         else:
-            _upsert_symbol_load_status(storage, symbol, "completed", "isyatirim_loaded")
+            status, reason = _derive_isyatirim_symbol_status(result.statements)
+            _upsert_symbol_load_status(storage, symbol, status, reason)
     if failures:
         typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
     storage.close()
@@ -292,10 +351,139 @@ def load_financials_isyatirim_live(
             failures.append(result.failures)
             _upsert_symbol_load_status(storage, symbol, "incomplete", "isyatirim_missing_records")
         else:
-            _upsert_symbol_load_status(storage, symbol, "completed", "isyatirim_loaded")
+            status, reason = _derive_isyatirim_symbol_status(result.statements)
+            _upsert_symbol_load_status(storage, symbol, status, reason)
     if failures:
         typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
     storage.close()
+
+
+@app.command()
+def load_financials_fallback_registry(
+    config: Path = Path("config.yaml"),
+    registry_file: Path = Path("data/universe/financial_fallback_registry.csv"),
+    only_stale: bool = True,
+    symbols: list[str] | None = None,
+    request_timeout_seconds: int = 25,
+) -> None:
+    settings = load_config(config)
+    if not registry_file.exists():
+        typer.echo(f"fallback registry not found: {registry_file}")
+        return
+
+    entries = [entry for entry in load_financial_fallback_registry(str(registry_file)) if entry.is_active]
+    if symbols:
+        target_symbols = {symbol.upper() for symbol in symbols}
+        entries = [entry for entry in entries if entry.symbol in target_symbols]
+    if only_stale:
+        stale_symbols = set(
+            _filter_symbols_by_latest_status(
+                sorted({entry.symbol for entry in entries}),
+                settings.data.duckdb_path,
+                include_statuses={"stale"},
+            )
+        )
+        entries = [entry for entry in entries if entry.symbol in stale_symbols]
+
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    loader = FinancialFallbackRegistryLoader(request_timeout_seconds=request_timeout_seconds)
+    failures: list[dict] = []
+    for index, entry in enumerate(entries, start=1):
+        typer.echo(f"[{index}/{len(entries)}] loading fallback financials for {entry.symbol} {entry.period_end}")
+        try:
+            record = loader.build_record(entry)
+            if record.get("shares_outstanding") is None:
+                record["shares_outstanding"] = _latest_known_shares_outstanding(storage, entry.symbol)
+                if record.get("shares_outstanding") is None:
+                    raise ValueError("shares_outstanding_missing_after_fallback_parse")
+            statements, items = record_to_statement_rows(record)
+            _upsert_statements(storage, statements)
+            _replace_items_for_statements(storage, items)
+            _upsert_symbol_load_status(storage, entry.symbol, "completed", "fallback_registry_loaded")
+        except Exception as error:
+            failures.append(
+                {
+                    "symbol": entry.symbol,
+                    "period_end": entry.period_end.isoformat(),
+                    "reason": "fallback_registry_failed",
+                    "detail": str(error),
+                }
+            )
+    storage.close()
+    if failures:
+        typer.echo(pd.DataFrame(failures).to_string(index=False))
+
+
+@app.command()
+def refresh_isyatirim_load_status(
+    config: Path = Path("config.yaml"),
+) -> None:
+    settings = load_config(config)
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+
+    normalized = statements.copy()
+    normalized["symbol"] = normalized["symbol"].astype(str).str.upper()
+    source_url = normalized.get("source_url", pd.Series(index=normalized.index, dtype="object")).astype(str)
+    statement_id = normalized.get("statement_id", pd.Series(index=normalized.index, dtype="object")).astype(str)
+    isyatirim_rows = normalized[
+        source_url.str.contains("isyatirim|Data\\.aspx/MaliTablo", case=False, regex=True, na=False)
+        | statement_id.str.startswith("ISYATIRIM-", na=False)
+    ].copy()
+    if isyatirim_rows.empty:
+        storage.close()
+        typer.echo("No İş Yatırım statements found")
+        return
+
+    updated = 0
+    for symbol, group in isyatirim_rows.groupby("symbol"):
+        status, reason = _derive_isyatirim_symbol_status(group)
+        _upsert_symbol_load_status(storage, symbol, status, reason)
+        updated += 1
+
+    storage.close()
+    typer.echo(f"updated_isyatirim_symbol_statuses={updated}")
+
+
+@app.command()
+def cleanup_invalid_kap_periods(
+    config: Path = Path("config.yaml"),
+) -> None:
+    settings = load_config(config)
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    invalid_ids = storage.connection.execute(
+        """
+        select statement_id
+        from financial_statements
+        where source_url like 'https://www.kap.org.tr/tr/Bildirim/%'
+          and announcement_date is not null
+          and period_end is not null
+          and period_end > announcement_date
+        """
+    ).df()
+    if invalid_ids.empty:
+        storage.close()
+        typer.echo("invalid_kap_statement_ids=0")
+        return
+
+    ids = invalid_ids["statement_id"].astype(str).tolist()
+    placeholders = ", ".join(["?"] * len(ids))
+    storage.connection.execute(
+        f"DELETE FROM financial_statement_items WHERE statement_id IN ({placeholders})",
+        ids,
+    )
+    storage.connection.execute(
+        f"DELETE FROM financial_statements WHERE statement_id IN ({placeholders})",
+        ids,
+    )
+    storage.close()
+    typer.echo(f"invalid_kap_statement_ids={len(ids)}")
 
 
 @app.command()
@@ -641,7 +829,56 @@ def load_financials_kap_incomplete(
     )
 
 
+@app.command()
+def load_financials_kap_stale(
+    config: Path = Path("config.yaml"),
+    strict: bool = False,
+    max_retries: int = 5,
+    backoff_seconds: float = 1.5,
+    request_timeout_seconds: int = 20,
+    min_request_interval_seconds: float = 1.0,
+    rate_limit_sleep_seconds: float = 30.0,
+    preflight_checks: int = 3,
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    symbols = _filter_symbols_by_latest_status(
+        symbols,
+        settings.data.duckdb_path,
+        include_statuses={"stale"},
+    )
+    if not symbols:
+        typer.echo("No stale symbols to refresh from KAP")
+        return
+    load_financials_kap(
+        config=config,
+        strict=strict,
+        only_incomplete=False,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        request_timeout_seconds=request_timeout_seconds,
+        min_request_interval_seconds=min_request_interval_seconds,
+        rate_limit_sleep_seconds=rate_limit_sleep_seconds,
+        preflight_checks=preflight_checks,
+        symbols_override=symbols,
+    )
+
+
 def _filter_only_incomplete_symbols(symbols: list[str], duckdb_path: Path | str) -> list[str]:
+    return _filter_symbols_by_latest_status(
+        symbols,
+        duckdb_path,
+        exclude_statuses={"completed"},
+    )
+
+
+def _filter_symbols_by_latest_status(
+    symbols: list[str],
+    duckdb_path: Path | str,
+    *,
+    include_statuses: set[str] | None = None,
+    exclude_statuses: set[str] | None = None,
+) -> list[str]:
     storage = DuckDbStorage(duckdb_path)
     storage.initialize()
     if not _table_exists(storage, "statement_load_status"):
@@ -664,10 +901,17 @@ def _filter_only_incomplete_symbols(symbols: list[str], duckdb_path: Path | str)
     normalized["updated_at"] = pd.to_datetime(normalized["updated_at"], errors="coerce")
     normalized = normalized.sort_values(["symbol", "updated_at"])
     latest_status = normalized.groupby("symbol").tail(1)
-    completed_symbols = set(
-        latest_status[latest_status["status"].astype(str) == "completed"]["symbol"].astype(str).tolist()
-    )
-    return [symbol for symbol in symbols if symbol.upper() not in completed_symbols]
+    latest_status["status"] = latest_status["status"].astype(str)
+    status_map = dict(zip(latest_status["symbol"].astype(str), latest_status["status"]))
+    filtered: list[str] = []
+    for symbol in symbols:
+        status = status_map.get(symbol.upper())
+        if include_statuses is not None and status not in include_statuses:
+            continue
+        if exclude_statuses is not None and status in exclude_statuses:
+            continue
+        filtered.append(symbol)
+    return filtered
 
 
 def _upsert_symbol_load_status(storage: DuckDbStorage, symbol: str, status: str, reason: str) -> None:
@@ -685,6 +929,59 @@ def _upsert_symbol_load_status(storage: DuckDbStorage, symbol: str, status: str,
                     "status": status,
                     "reason": reason,
                     "updated_at": datetime.now(UTC),
+                }
+            ]
+        ),
+    )
+
+
+def _derive_isyatirim_symbol_status(
+    statements: pd.DataFrame,
+    *,
+    as_of_date: date | None = None,
+) -> tuple[str, str]:
+    if statements.empty or "period_end" not in statements.columns:
+        return ("incomplete", "isyatirim_missing_records")
+    period_end = pd.to_datetime(statements["period_end"], errors="coerce").dropna()
+    if period_end.empty:
+        return ("incomplete", "isyatirim_missing_records")
+    latest_period = period_end.max().date()
+    expected_period = _expected_latest_reported_period(as_of_date or datetime.now(UTC).date())
+    if latest_period < expected_period:
+        return ("stale", "isyatirim_stale_source")
+    return ("completed", "isyatirim_loaded")
+
+
+def _expected_latest_reported_period(as_of_date: date) -> date:
+    year = as_of_date.year
+    month = as_of_date.month
+    if month <= 3:
+        return date(year - 1, 9, 1)
+    if month <= 5:
+        return date(year - 1, 12, 1)
+    if month <= 8:
+        return date(year, 3, 1)
+    if month <= 11:
+        return date(year, 6, 1)
+    return date(year, 9, 1)
+
+
+def _append_backtest_run(storage: DuckDbStorage, settings, result: dict, config_path: Path) -> None:
+    config_hash = hashlib.sha256(
+        json.dumps(settings.model_dump(mode="json"), sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    storage.append_table(
+        "backtest_runs",
+        pd.DataFrame(
+            [
+                {
+                    "run_id": result["run_id"],
+                    "created_at": pd.to_datetime(result["created_at"]),
+                    "config_hash": config_hash,
+                    "start_date": settings.backtest.start_date,
+                    "end_date": settings.backtest.end_date,
+                    "initial_capital": settings.backtest.initial_capital,
+                    "notes": str(config_path),
                 }
             ]
         ),
@@ -731,11 +1028,78 @@ def run(config: Path = Path("config.yaml")) -> None:
     financials = storage.read_table("financial_snapshots")
     membership = _load_membership_for_run(settings)
     result = run_monthly_rotation_backtest(settings, prices, financials, membership)
+    _append_backtest_run(storage, settings, result, config)
     storage.append_table("backtest_monthly_results", result["monthly_results"])
     if not result["selected_positions"].empty:
         storage.append_table("backtest_selected_positions", result["selected_positions"])
     typer.echo(result["run_id"])
     storage.close()
+
+
+@app.command()
+def build_dashboard(
+    output_dir: Path = Path("outputs/dashboard"),
+) -> None:
+    statuses = []
+    root = dashboard_root(output_dir)
+    for profile in active_dashboard_profiles():
+        try:
+            settings = load_config(profile.config_path)
+            storage = DuckDbStorage(settings.data.duckdb_path)
+            storage.initialize()
+            prices = storage.read_table("market_prices")
+            financials = storage.read_table("financial_snapshots")
+            membership = _load_membership_for_run(settings)
+            result = run_monthly_rotation_backtest(settings, prices, financials, membership)
+            _append_backtest_run(storage, settings, result, profile.config_path)
+            storage.append_table("backtest_monthly_results", result["monthly_results"])
+            if not result["selected_positions"].empty:
+                storage.append_table("backtest_selected_positions", result["selected_positions"])
+            storage.close()
+            statuses.append(
+                build_profile_dashboard_dataset(
+                    root,
+                    profile,
+                    settings,
+                    result,
+                    prices=prices,
+                    membership=membership,
+                    financial_snapshots=financials,
+                )
+            )
+        except Exception as error:
+            statuses.append(empty_status(profile, str(error)))
+    write_dashboard_manifest(root, statuses)
+    typer.echo(str(root / "manifest.json"))
+
+
+@app.command()
+def refresh_dashboard(
+    output_dir: Path = Path("outputs/dashboard"),
+    registry_file: Path = Path("data/universe/bist_sanayi_investing_registry.csv"),
+    skip_price_load: bool = False,
+    skip_network_loaders: bool = False,
+) -> None:
+    profiles = active_dashboard_profiles()
+    base_profile = profiles[0]
+    if not skip_price_load:
+        load_prices(base_profile.config_path)
+    if not skip_network_loaders:
+        load_financials_isyatirim_live(config=base_profile.config_path)
+        refresh_isyatirim_load_status(config=base_profile.config_path)
+        load_financials_fallback_registry(config=base_profile.config_path)
+        if registry_file.exists():
+            load_announcement_dates_investing_live(registry_file, config=base_profile.config_path, only_missing=True)
+        load_announcement_dates_issuer_ir_fallback(config=base_profile.config_path, only_missing=True)
+        load_announcement_dates_mkk_esirket_fallback(config=base_profile.config_path, only_missing=True)
+    build_snapshots(base_profile.config_path)
+    build_dashboard(output_dir=output_dir)
+
+
+@app.command()
+def serve_admin() -> None:
+    settings = load_admin_settings()
+    uvicorn.run(create_app(settings), host="0.0.0.0", port=settings.port)
 
 
 @app.command()
@@ -953,6 +1317,26 @@ def _upsert_statements(storage: DuckDbStorage, statements: pd.DataFrame) -> None
         statement_ids,
     )
     storage.append_table("financial_statements", statements)
+
+
+def _latest_known_shares_outstanding(storage: DuckDbStorage, symbol: str) -> float | None:
+    row = storage.connection.execute(
+        """
+        SELECT shares_outstanding
+        FROM financial_statements
+        WHERE symbol = ?
+          AND shares_outstanding IS NOT NULL
+        ORDER BY announcement_date DESC NULLS LAST, period_end DESC NULLS LAST
+        LIMIT 1
+        """,
+        [symbol.upper()],
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return float(row[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def _replace_items_for_statements(storage: DuckDbStorage, items: pd.DataFrame) -> None:

@@ -1,0 +1,5 @@
+symbol,period_end,fiscal_year,fiscal_period,source_type,source_url,announcement_date,is_active,notes
+BORSK,2025-12-01,2025,Q4,financialreports_filing,https://financialreports.eu/filings/bor-seker-as/interim-quarterly-report/2026/13770952/,2026-01-30,true,2025 Q4 stale on isyatirim; financialreports digital filing
+KAYSE,2026-01-01,2025,Q4,financialreports_filing,https://financialreports.eu/filings/kayseri-seker-fabrikasi-as/interim-quarterly-report/2026/32938464/,2026-03-12,true,Special fiscal period 01.05.2025-31.01.2026 from financialreports filing
+BALSU,2025-12-01,2025,Q4,issuer_ir_pdf_text,https://www.balsugida.com/wp-content/uploads/yatirimci/raporlar/finansal/balsu-finansal-rapor-31-12-2025.pdf,2026-02-18,true,2025 Q4 stale on isyatirim; issuer IR PDF text fallback
+MERKO,2025-12-01,2025,Q4,financialreports_filing,https://financialreports.eu/filings/merko-gida-sanayi-ve-ticaret-as/interim-quarterly-report/2026/13436175/,2026-01-27,true,2025 Q4 stale on isyatirim; financialreports HTML filing

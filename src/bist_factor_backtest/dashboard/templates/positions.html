@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="stack page-shell">
+  <section class="hero-card compact-hero">
+    <div class="hero-copy">
+      <span class="eyebrow">Pozisyonlar</span>
+      <h1>{{ summary.profile_label or "Profile Positions" }}</h1>
+      <p class="muted">
+        Gosterilen ay {{ selected_month | fmt_month }}.
+        Son veri ayi {{ summary.latest_data_month | fmt_month }}.
+        {% if summary.preview_month and selected_month == summary.preview_month %}
+        Bu liste ay sonu kapanisina gore uretilen sonraki ay preview listesidir.
+        {% endif %}
+      </p>
+    </div>
+    <form method="get" action="/positions" class="filter-grid">
+      <div class="field">
+        <label for="config">Profil</label>
+        <select id="config" name="config">
+          {% for profile in manifest.profiles %}
+          <option value="{{ profile.profile_id }}" {% if profile.profile_id == selected_profile %}selected{% endif %}>{{ profile.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="year">Yil</label>
+        <select id="year" name="year">
+          {% for year in years %}
+          <option value="{{ year }}" {% if year == selected_year %}selected{% endif %}>{{ year }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="month">Ay</label>
+        <select id="month" name="month">
+          {% for month in range(1, 13) %}
+          {% set month_num = "%02d"|format(month) %}
+          <option value="{{ month_num }}" {% if month_num == selected_month_num %}selected{% endif %}>{{ month_num }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="primary-button">Uygula</button>
+    </form>
+  </section>
+
+  {% if refresh_status and refresh_status.status == "failed" %}
+  <section class="surface-card status-card status-failed">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Refresh</span>
+        <h2>Son Job Basarisiz</h2>
+      </div>
+    </div>
+    <p class="muted">{{ refresh_status.message or "Refresh basarisiz oldu." }}</p>
+    {% if refresh_status.current_step %}
+    <p class="muted">Adim: {{ refresh_status.current_step }}</p>
+    {% endif %}
+    {% if refresh_status.log_file %}
+    <p class="muted">Log: {{ refresh_status.log_file }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if alerts %}
+  <section class="surface-card warning-card">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Uyarilar</span>
+        <h2>Guncel Eksik Finansal Adaylari</h2>
+      </div>
+    </div>
+    <div class="warning-list">
+      {% for row in alerts %}
+      <div class="warning-item">
+        <strong>{{ row.symbol }}</strong>
+        <span>Gecici sira {{ row.provisional_rank | fmt_num }}</span>
+        <p>{{ row.missing_fields | join(", ") }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if stale_base_alerts %}
+  <section class="surface-card warning-card">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Tazelik</span>
+        <h2>Guncel Eski Annual Baz Uyarilari</h2>
+      </div>
+    </div>
+    <div class="warning-list">
+      {% for row in stale_base_alerts %}
+      <div class="warning-item">
+        <strong>{{ row.symbol }}</strong>
+        <span>{{ row.used_period_label or "-" }}</span>
+        <p>{{ row.financial_base_quarter_lag | fmt_num }} ceyrek geriden geliyor.</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="metric-grid compact-grid">
+    <article class="metric-card">
+      <span class="metric-label">Gosterilen Ay</span>
+      <strong class="metric-value">{{ selected_month | fmt_month }}</strong>
+    </article>
+    <article class="metric-card regime-card regime-{{ month_regime.regime_risk or 'unknown' }}">
+      <span class="metric-label">Ay Basi Rejimi</span>
+      <strong class="metric-value">{{ month_regime.regime_label or "Rejim bilinmiyor" }}</strong>
+      <span class="metric-note">
+        Breadth 200g {{ month_regime.breadth_200d | fmt_pct }}.
+        {{ month_regime.regime_note or "Bu ay icin rejim verisi yok." }}
+      </span>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Pozisyon Sayisi</span>
+      <strong class="metric-value">{{ positions | length }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Son Kapanmis Ay</span>
+      <strong class="metric-value">{{ summary.latest_selected_month | fmt_month }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-label">Son Veri Ayi</span>
+      <strong class="metric-value">{{ summary.latest_data_month | fmt_month }}</strong>
+    </article>
+  </section>
+
+  <section class="surface-card">
+    <div class="section-head">
+      <div>
+        <span class="eyebrow">Formula</span>
+        <h2>Secili Pozisyonlar</h2>
+      </div>
+    </div>
+    {% if positions %}
+    <div class="table-shell">
+      <table class="data-table responsive-table">
+        <thead>
+          <tr>
+            <th>Sembol</th>
+            <th>Skor</th>
+            <th>X1</th>
+            <th>X2</th>
+            <th>X1 Pay</th>
+            <th>X2 Pay</th>
+            <th>Secim Skoru</th>
+            <th>Buyume</th>
+            <th>Ozsermaye</th>
+            <th>Faaliyet Kari</th>
+            <th>Firma Degeri</th>
+            <th>Kullanilan Donem Sonu</th>
+            <th>Kullanilan Aciklanma Tarihi</th>
+            <th>Baz Uyarisi</th>
+            <th>Rejim</th>
+            <th>Alis Tarihi</th>
+            <th>Satis Tarihi</th>
+            <th>Net Getiri</th>
+            <th>Durum</th>
+            <th>Guven</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in positions %}
+          <tr class="confidence-{{ row.confidence_level }}">
+            <td data-label="Sembol"><strong>{{ row.symbol }}</strong></td>
+            <td data-label="Skor">{{ row.score | fmt_num }}</td>
+            <td data-label="X1">{{ row.x1 | fmt_num }}</td>
+            <td data-label="X2">{{ row.x2 | fmt_num }}</td>
+            <td data-label="X1 Pay">{{ row.x1_share | fmt_pct }}</td>
+            <td data-label="X2 Pay">{{ row.x2_share | fmt_pct }}</td>
+            <td data-label="Secim Skoru">{{ row.selection_score | fmt_num }}</td>
+            <td data-label="Buyume">{{ row.net_income_growth | fmt_pct }}</td>
+            <td data-label="Ozsermaye">{{ row.equity | fmt_num }}</td>
+            <td data-label="Faaliyet Kari">{{ row.operating_profit_ttm | fmt_num }}</td>
+            <td data-label="Firma Degeri">{{ row.firm_value | fmt_num }}</td>
+            <td data-label="Kullanilan Donem Sonu">{{ row.used_period_label or row.used_period_end }}</td>
+            <td data-label="Kullanilan Aciklanma Tarihi">{{ row.used_announcement_date or row.announcement_date or "-" }}</td>
+            <td data-label="Baz Uyarisi">
+              {% if row.stale_financial_base %}
+              <span class="badge badge-neutral" title="{{ row.financial_base_quarter_lag | fmt_num }} ceyrek gecikme">
+                Eski annual baz
+              </span>
+              {% else %}
+              -
+              {% endif %}
+            </td>
+            <td data-label="Rejim">
+              <span class="badge badge-regime badge-regime-{{ row.regime_risk or 'unknown' }}">
+                {{ row.regime_label or "-" }}
+              </span>
+            </td>
+            <td data-label="Alis Tarihi">{{ row.buy_date or "-" }}</td>
+            <td data-label="Satis Tarihi">{{ row.sell_date or "-" }}</td>
+            <td data-label="Net Getiri">{{ row.net_return | fmt_pct }}</td>
+            <td data-label="Durum">{{ row.position_status_detail or "-" }}</td>
+            <td data-label="Guven">
+              <span class="badge badge-{{ row.confidence_level }}" title="repeat={{ row.repeat_count | fmt_num }}, avg={{ row.avg_net_return | fmt_pct }}, win_rate={{ row.win_rate | fmt_pct }}">
+                {{ row.confidence_level | confidence_label }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-state">Bu ay icin secili pozisyon yok.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

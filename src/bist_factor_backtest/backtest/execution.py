@@ -10,7 +10,8 @@ def calculate_position_return_open_to_open(
     symbol: str,
     buy_date: date,
     sell_date: date,
-    commission_rate: float,
+    buy_commission_rate: float,
+    sell_commission_rate: float,
 ) -> dict[str, float | str | date] | None:
     symbol_prices = prices[prices["symbol"] == symbol]
     if not symbol_prices.empty and not isinstance(symbol_prices["date"].iloc[0], date):
@@ -30,5 +31,7 @@ def calculate_position_return_open_to_open(
         "sell_date": sell_date,
         "sell_price": sell_price,
         "gross_return": gross_return,
-        "net_return": gross_return - (2 * commission_rate),
+        "net_return": gross_return - buy_commission_rate - sell_commission_rate,
+        "buy_commission_rate": buy_commission_rate,
+        "sell_commission_rate": sell_commission_rate,
     }

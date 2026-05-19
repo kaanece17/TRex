@@ -1,0 +1,16 @@
+[Unit]
+Description=TRex Dashboard First-Open Price Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trexdash
+Group=trexdash
+WorkingDirectory=/opt/trex-dashboard
+ExecStart=/opt/trex-dashboard/check_first_open_day.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trex-dashboard

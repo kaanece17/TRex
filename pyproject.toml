@@ -11,21 +11,27 @@ requires-python = ">=3.11"
 dependencies = [
   "beautifulsoup4>=4.14",
   "duckdb>=0.10",
+  "fastapi>=0.115",
+  "itsdangerous>=2.2",
+  "jinja2>=3.1",
   "openpyxl>=3.1",
   "pandas>=2.1",
   "pyarrow>=14",
   "pypdf>=6.10",
   "pydantic>=2.6",
   "pykap>=0.2.0",
+  "python-multipart>=0.0.9",
   "pyyaml>=6.0",
   "requests>=2.31",
   "typer>=0.12",
+  "uvicorn>=0.30",
   "xlsxwriter>=3.1",
   "yfinance>=0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.28",
   "pytest>=8",
   "pytest-cov>=5",
 ]
@@ -35,6 +41,9 @@ bist-backtest = "bist_factor_backtest.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"bist_factor_backtest.dashboard" = ["templates/*.html", "static/*.css"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=bist_factor_backtest --cov-report=term-missing --cov-fail-under=100"

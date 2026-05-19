@@ -40,3 +40,38 @@ def get_latest_known_financials(
         .tail(1)
         .reset_index(drop=True)
     )
+
+
+def get_latest_known_annual_financials(
+    financials: pd.DataFrame,
+    rebalance_datetime: datetime,
+    first_trading_day: date | None = None,
+    date_only_fallback: bool = True,
+    use_all_annuals_for_previous_reference: bool = True,
+) -> pd.DataFrame:
+    annuals = financials.copy()
+    annuals = annuals[annuals["fiscal_quarter"] == 4].copy()
+    latest = get_latest_known_financials(
+        annuals,
+        rebalance_datetime=rebalance_datetime,
+        first_trading_day=first_trading_day,
+        date_only_fallback=date_only_fallback,
+    )
+    if latest.empty:
+        return latest
+
+    previous_source = annuals if use_all_annuals_for_previous_reference else latest
+    previous = previous_source[["symbol", "fiscal_year", "net_income", "operating_profit"]].copy()
+    previous["fiscal_year"] = previous["fiscal_year"] + 1
+    previous = previous.rename(
+        columns={
+            "net_income": "previous_annual_net_income",
+            "operating_profit": "previous_annual_operating_profit",
+        }
+    )
+    latest = latest.merge(previous, on=["symbol", "fiscal_year"], how="left")
+    # Reuse existing filter pipeline by exposing annual fields through the same names.
+    latest["net_income_ttm"] = latest["net_income"]
+    latest["previous_net_income_ttm"] = latest["previous_annual_net_income"]
+    latest["operating_profit_ttm"] = latest["operating_profit"]
+    return latest
