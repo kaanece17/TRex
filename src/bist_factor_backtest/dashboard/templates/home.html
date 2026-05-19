@@ -19,9 +19,10 @@
       </p>
     </div>
     <form method="get" action="/" class="panel-filter">
+      <input type="hidden" name="market" value="{{ selected_market }}">
       <label for="profile">Profil</label>
       <select id="profile" name="config" onchange="this.form.submit()">
-        {% for profile in manifest.profiles %}
+        {% for profile in available_profiles %}
         <option value="{{ profile.profile_id }}" {% if profile.profile_id == selected_profile %}selected{% endif %}>{{ profile.label }}</option>
         {% endfor %}
       </select>
@@ -193,7 +194,7 @@
         <h2>Guncel Ay Listesi</h2>
         <p class="muted">{{ (summary.current_display_month or summary.current_month) | fmt_month }}</p>
       </div>
-      <a class="action-link" href="/positions?config={{ selected_profile }}">Tumunu ac</a>
+      <a class="action-link" href="/positions?market={{ selected_market }}&config={{ selected_profile }}">Tumunu ac</a>
     </div>
     {% if current_positions %}
     <div class="table-shell">

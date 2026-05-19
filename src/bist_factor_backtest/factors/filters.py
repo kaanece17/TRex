@@ -24,6 +24,7 @@ class FilterSettings:
     require_positive_operating_profit_ttm: bool = True
     require_positive_firm_value: bool = True
     require_shares_outstanding: bool = True
+    min_market_cap: float | None = None
     max_net_income_to_equity: float | None = None
     x1_dominant_share_threshold: float | None = None
     recent_return_20d_threshold: float | None = None
@@ -67,6 +68,8 @@ def apply_filters(data: pd.DataFrame, settings: FilterSettings) -> tuple[pd.Data
         checks.append(("negative_firm_value", result["firm_value"].isna() | (result["firm_value"] <= 0)))
     if settings.require_shares_outstanding:
         checks.append(("missing_shares_outstanding", result["shares_outstanding"].isna() | (result["shares_outstanding"] <= 0)))
+    if settings.min_market_cap is not None and "market_cap" in result.columns:
+        checks.append(("small_market_cap", result["market_cap"].isna() | (result["market_cap"] < settings.min_market_cap)))
     if settings.max_net_income_to_equity is not None:
         income_column = "net_income" if "net_income" in result.columns else "net_income_ttm"
         roe_like = result[income_column] / result["equity"]

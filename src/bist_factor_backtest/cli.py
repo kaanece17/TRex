@@ -33,6 +33,7 @@ from bist_factor_backtest.data.financials_fallback_registry import (
     load_financial_fallback_registry,
     record_to_statement_rows,
 )
+from bist_factor_backtest.data.financials_sec_companyfacts import SECCompanyFactsFinancialLoader
 from bist_factor_backtest.data.issuer_ir_announcements import ISSUER_IR_SOURCES, IssuerIRAnnouncementsLoader
 from bist_factor_backtest.data.financials_isyatirim import IsYatirimFinancialLoader
 from bist_factor_backtest.data.investing_registry import (
@@ -55,7 +56,7 @@ from bist_factor_backtest.data.universe import (
     load_static_universe,
     load_universe_membership,
 )
-from bist_factor_backtest.factors.ttm import add_ttm_values
+from bist_factor_backtest.factors.ttm import add_earnings_momentum_features, add_ttm_values
 from bist_factor_backtest.reports.excel_export import export_excel_report
 
 app = typer.Typer()
@@ -79,7 +80,12 @@ def load_prices(config: Path = Path("config.yaml")) -> None:
     storage.initialize()
     symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
     start_date = settings.data.price_preload_start or settings.backtest.start_date
-    prices = YFinancePriceLoader().load(symbols, start_date, settings.backtest.end_date)
+    prices = YFinancePriceLoader().load(
+        symbols,
+        start_date,
+        settings.backtest.end_date,
+        yahoo_suffix=settings.data.price_symbol_suffix,
+    )
     storage.replace_table("market_prices", prices)
     storage.close()
 
@@ -105,6 +111,7 @@ def capture_first_open_prices(
         market_open_time=settings.strategy.market_open_time,
         timezone=settings.project.timezone,
         interval=interval,
+        yahoo_suffix=settings.data.price_symbol_suffix,
     )
     storage.connection.execute(
         "DELETE FROM market_open_captures WHERE trade_date = ? AND source = ? AND interval = ?",
@@ -355,6 +362,47 @@ def load_financials_isyatirim_live(
             _upsert_symbol_load_status(storage, symbol, status, reason)
     if failures:
         typer.echo(pd.concat(failures, ignore_index=True).to_string(index=False))
+    storage.close()
+
+
+@app.command()
+def load_financials_sec(
+    config: Path = Path("config.yaml"),
+    max_symbols: int | None = None,
+    request_timeout_seconds: int = 20,
+    min_request_interval_seconds: float = 0.2,
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    if max_symbols is not None:
+        symbols = symbols[:max_symbols]
+    start_date = settings.data.financial_preload_start or settings.backtest.start_date
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    loader = SECCompanyFactsFinancialLoader(
+        user_agent=settings.data.sec_user_agent,
+        request_timeout_seconds=request_timeout_seconds,
+        min_request_interval_seconds=min_request_interval_seconds,
+    )
+    result = loader.load(symbols, start_date, settings.backtest.end_date)
+    if not result.statements.empty:
+        _upsert_statements(storage, result.statements)
+        for symbol, group in result.statements.groupby("symbol"):
+            _upsert_symbol_load_status(storage, str(symbol).upper(), "completed", "sec_companyfacts_loaded")
+    if not result.items.empty:
+        _replace_items_for_statements(storage, result.items)
+    if not result.failures.empty:
+        for _, row in result.failures.iterrows():
+            _upsert_symbol_load_status(
+                storage,
+                str(row.get("symbol", "")).upper(),
+                "failed",
+                str(row.get("reason") or "sec_fetch_failed"),
+            )
+        typer.echo(result.failures.to_string(index=False))
+    typer.echo(
+        f"sec_statements={len(result.statements)} sec_items={len(result.items)} sec_failures={len(result.failures)}"
+    )
     storage.close()
 
 
@@ -1015,6 +1063,7 @@ def build_snapshots(config: Path = Path("config.yaml")) -> None:
     )
     snapshots = _build_financial_snapshots_from_statements(statements, items, aliases)
     snapshots = add_ttm_values(snapshots)
+    snapshots = add_earnings_momentum_features(snapshots)
     storage.replace_table("financial_snapshots", snapshots)
     storage.close()
 
@@ -1156,7 +1205,12 @@ def export_report(
 def _load_membership_for_run(settings):
     if settings.universe.mode == "current_static":
         symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
-        return build_current_static_membership(symbols, settings.backtest.start_date, str(settings.universe.symbols_file))
+        return build_current_static_membership(
+            symbols,
+            settings.backtest.start_date,
+            str(settings.universe.symbols_file),
+            universe_name=settings.universe.name,
+        )
     if settings.universe.mode == "reconstructed_historical":
         if settings.universe.membership_file is None or not settings.universe.membership_file.exists():
             raise typer.BadParameter("reconstructed_historical universe requires an explicit reconstructed membership_file")

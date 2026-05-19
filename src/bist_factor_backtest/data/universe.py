@@ -71,19 +71,25 @@ def parse_cnbce_bist_codes(html: str) -> list[str]:
 def fetch_current_static_xusin_membership(
     url: str = "https://www.cnbce.com/borsa/hisseler/bist-sinai-hisseleri",
     start_date: date = date(1900, 1, 1),
+    universe_name: str = "BIST_SANAYI",
 ) -> pd.DataFrame:
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     symbols = parse_cnbce_bist_codes(response.text)
-    return build_current_static_membership(symbols, start_date, url)
+    return build_current_static_membership(symbols, start_date, url, universe_name=universe_name)
 
 
-def build_current_static_membership(symbols: list[str], start_date: date, source_url: str) -> pd.DataFrame:
+def build_current_static_membership(
+    symbols: list[str],
+    start_date: date,
+    source_url: str,
+    universe_name: str = "BIST_SANAYI",
+) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
                 "symbol": symbol.upper(),
-                "universe_name": "BIST_SANAYI",
+                "universe_name": universe_name,
                 "start_date": start_date,
                 "end_date": None,
                 "source_type": "current_static",

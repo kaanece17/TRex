@@ -76,3 +76,48 @@ def add_ttm_values(cumulative: pd.DataFrame) -> pd.DataFrame:
     data = data.merge(previous, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
     data["net_income_growth"] = (data["net_income_ttm"] - data["previous_net_income_ttm"]) / data["previous_net_income_ttm"]
     return data
+
+
+def add_earnings_momentum_features(cumulative: pd.DataFrame) -> pd.DataFrame:
+    data = cumulative.copy()
+    data = data.drop(
+        columns=[
+            "ni_ttm_growth_yoy",
+            "op_ttm_growth_yoy",
+            "earnings_acceleration",
+            "profitability_quality_combo",
+        ],
+        errors="ignore",
+    )
+    data = data.sort_values(["symbol", "period_end"]).reset_index(drop=True)
+    data["ni_ttm_growth_yoy"] = (data["net_income_ttm"] - data["previous_net_income_ttm"]) / data["previous_net_income_ttm"]
+
+    previous_op = data[["symbol", "fiscal_year", "fiscal_quarter", "operating_profit_ttm"]].copy()
+    previous_op["fiscal_year"] = previous_op["fiscal_year"] + 1
+    previous_op = previous_op.rename(columns={"operating_profit_ttm": "previous_operating_profit_ttm"})
+    data = data.merge(previous_op, on=["symbol", "fiscal_year", "fiscal_quarter"], how="left")
+    data["op_ttm_growth_yoy"] = (
+        data["operating_profit_ttm"] - data["previous_operating_profit_ttm"]
+    ) / data["previous_operating_profit_ttm"]
+
+    data["previous_ni_ttm_growth_yoy"] = data.groupby("symbol")["ni_ttm_growth_yoy"].shift(1)
+    data["earnings_acceleration"] = data["ni_ttm_growth_yoy"] - data["previous_ni_ttm_growth_yoy"]
+
+    profitability_score = pd.concat(
+        [
+            data["net_income_ttm"].gt(0),
+            data["previous_net_income_ttm"].gt(0),
+            data["operating_profit_ttm"].gt(0),
+        ],
+        axis=1,
+    ).mean(axis=1)
+    positive_growth = pd.concat(
+        [
+            data["ni_ttm_growth_yoy"].clip(lower=0),
+            data["op_ttm_growth_yoy"].clip(lower=0),
+        ],
+        axis=1,
+    ).mean(axis=1, skipna=True)
+    data["profitability_quality_combo"] = profitability_score * (1 + positive_growth.fillna(0.0))
+
+    return data.drop(columns=["previous_operating_profit_ttm", "previous_ni_ttm_growth_yoy"], errors="ignore")

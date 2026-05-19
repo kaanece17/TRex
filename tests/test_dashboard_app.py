@@ -11,6 +11,8 @@ class TestDashboardApp:
         root = tmp_path / "dashboard"
         profile_dir = root / "accepted_top6"
         profile_dir.mkdir(parents=True)
+        us_profile_dir = root / "us_industrials_momentum"
+        us_profile_dir.mkdir(parents=True)
         (root / "manifest.json").write_text(
             json.dumps(
                 {
@@ -20,7 +22,22 @@ class TestDashboardApp:
                             "profile_id": "accepted_top6",
                             "label": "Kabul Edilen Ana Profil",
                             "config_path": "config.formula_research.yaml",
+                            "market_id": "tr",
+                            "market_label": "TR",
                             "run_id": "run-1",
+                            "active": True,
+                            "last_refreshed_at": "2026-05-18T00:00:00+00:00",
+                            "latest_data_month": "2026-05",
+                            "refresh_status": "success",
+                            "message": None,
+                        },
+                        {
+                            "profile_id": "us_industrials_momentum",
+                            "label": "US Industrials Momentum",
+                            "config_path": "config.us_industrials_momentum.yaml",
+                            "market_id": "us",
+                            "market_label": "US",
+                            "run_id": "run-us-1",
                             "active": True,
                             "last_refreshed_at": "2026-05-18T00:00:00+00:00",
                             "latest_data_month": "2026-05",
@@ -151,6 +168,30 @@ class TestDashboardApp:
         }
         for name, payload in files.items():
             (profile_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+        for name, payload in {
+            "summary.json": {
+                "profile_label": "US Industrials Momentum",
+                "run_id": "run-us-1",
+                "current_month": "2026-05",
+                "latest_data_month": "2026-05",
+                "latest_selected_month": "2026-04",
+                "final_capital": 1500,
+                "total_return": 0.5,
+                "best_month": "2026-04",
+                "worst_month": "2026-03",
+            },
+            "monthly_returns.json": [],
+            "monthly_regimes.json": [],
+            "selected_positions.json": [],
+            "next_month_preview.json": [],
+            "next_month_preview_alerts.json": [],
+            "next_month_preview_stale_bases.json": [],
+            "missing_financials.json": [],
+            "current_month_alerts.json": [],
+            "current_month_stale_bases.json": [],
+            "symbol_confidence.json": [],
+        }.items():
+            (us_profile_dir / name).write_text(json.dumps(payload), encoding="utf-8")
 
         app = create_app(
             AdminSettings(
@@ -179,6 +220,8 @@ class TestDashboardApp:
         assert "Son veri ayi 2026 / 05." in home.text
         assert "Sonraki ay preview 2026 / 06 (baz: 2026-05-29)." in home.text
         assert "Ay sonu refresh basarisiz oldu: build-dashboard" in home.text
+        assert "market=tr" in home.text
+        assert "market=us" in home.text
 
         positions = client.get("/positions?config=accepted_top6&year=2026&month=06")
         assert positions.status_code == 200
@@ -188,3 +231,8 @@ class TestDashboardApp:
         missing = client.get("/missing-financials?config=accepted_top6&year=2026&month=05")
         assert missing.status_code == 200
         assert "announcement_date" in missing.text
+
+        us_home = client.get("/?market=us")
+        assert us_home.status_code == 200
+        assert "US Industrials Momentum" in us_home.text
+        assert "Kabul Edilen Ana Profil" not in us_home.text

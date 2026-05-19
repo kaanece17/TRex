@@ -36,6 +36,8 @@ class ProjectConfig(_Model):
 class DataConfig(_Model):
     storage: str = "duckdb"
     duckdb_path: Path
+    price_symbol_suffix: str | None = ".IS"
+    sec_user_agent: str | None = None
     price_preload_start: date | None = None
     financial_preload_start: date | None = None
 
@@ -94,6 +96,7 @@ class ScoringConfig(_Model):
     growth_mode: str = "normalized_percent_cap"
     x1_weight: float = 1.0
     x2_weight: float = 1.0
+    earnings_weight: float = 1.0
     momentum_rank_weight: float = 0.0
     cheap_value_trap_penalty: float = 0.0
     cheap_value_trap_fv_to_equity_threshold: float | None = None
@@ -114,6 +117,7 @@ class FiltersConfig(_Model):
     require_positive_operating_profit_ttm: bool = True
     require_positive_firm_value: bool = True
     require_shares_outstanding: bool = True
+    min_market_cap: float | None = None
     max_net_income_to_equity: float | None = None
     x1_dominant_share_threshold: float | None = None
     recent_return_20d_threshold: float | None = None

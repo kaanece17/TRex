@@ -1,6 +1,7 @@
 import pandas as pd
+import pytest
 
-from bist_factor_backtest.factors.ttm import add_quarterly_values, add_ttm_values
+from bist_factor_backtest.factors.ttm import add_earnings_momentum_features, add_quarterly_values, add_ttm_values
 
 
 class TestAddQuarterlyValues:
@@ -212,3 +213,45 @@ class TestAddTtmValues:
         assert q2_2022["net_income_ttm"] == 130
         assert q2_2022["operating_profit_ttm"] == 150
         assert q2_2023["previous_net_income_ttm"] == 130
+
+
+class TestAddEarningsMomentumFeatures:
+    def test_addEarningsMomentumFeatures_priorYearComparables_returnExpectedSignals(self):
+        rows = []
+        for year, values in [(2023, [10, 30, 60, 100]), (2024, [20, 50, 90, 140])]:
+            for quarter, net_income in enumerate(values, start=1):
+                rows.append(
+                    {
+                        "symbol": "ABC",
+                        "period_end": f"{year}-{quarter * 3:02d}-28",
+                        "fiscal_year": year,
+                        "fiscal_quarter": quarter,
+                        "net_income": net_income,
+                        "operating_profit": net_income * 2,
+                    }
+                )
+        financials = pd.DataFrame(rows)
+
+        result = add_earnings_momentum_features(add_ttm_values(financials))
+        current = result[(result["fiscal_year"] == 2024) & (result["fiscal_quarter"] == 4)].iloc[0]
+
+        assert current["ni_ttm_growth_yoy"] == pytest.approx(0.4)
+        assert current["op_ttm_growth_yoy"] == pytest.approx(0.4)
+        assert pd.isna(current["earnings_acceleration"])
+        assert current["profitability_quality_combo"] > 1.0
+
+    def test_addEarningsMomentumFeatures_missingPriorYearComparable_keepsNa(self):
+        financials = pd.DataFrame(
+            [
+                {"symbol": "ABC", "period_end": "2024-03-31", "fiscal_year": 2024, "fiscal_quarter": 1, "net_income": 10, "operating_profit": 20},
+                {"symbol": "ABC", "period_end": "2024-06-30", "fiscal_year": 2024, "fiscal_quarter": 2, "net_income": 25, "operating_profit": 40},
+                {"symbol": "ABC", "period_end": "2024-09-30", "fiscal_year": 2024, "fiscal_quarter": 3, "net_income": 45, "operating_profit": 70},
+                {"symbol": "ABC", "period_end": "2024-12-31", "fiscal_year": 2024, "fiscal_quarter": 4, "net_income": 80, "operating_profit": 120},
+            ]
+        )
+
+        result = add_earnings_momentum_features(add_ttm_values(financials))
+        current = result[result["fiscal_quarter"] == 4].iloc[0]
+
+        assert pd.isna(current["ni_ttm_growth_yoy"])
+        assert pd.isna(current["op_ttm_growth_yoy"])

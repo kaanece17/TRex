@@ -267,6 +267,42 @@ class TestCalculateScores:
         assert result["x1_share"].iloc[0] > 0.75
         assert result["selection_score"].tolist() == pytest.approx([0.3, 0.38])
 
+    def test_calculateScores_qualityPlusEarnings_prefersStrongerEarningsSignal(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "ni_ttm_growth_yoy": 1.0,
+                    "op_ttm_growth_yoy": 0.8,
+                    "earnings_acceleration": 0.2,
+                    "profitability_quality_combo": 1.8,
+                },
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "ni_ttm_growth_yoy": 0.1,
+                    "op_ttm_growth_yoy": 0.0,
+                    "earnings_acceleration": -0.2,
+                    "profitability_quality_combo": 1.0,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(formula="quality_plus_earnings", earnings_weight=1.0),
+        )
+
+        assert result["score"].iloc[0] > result["score"].iloc[1]
+        assert result["earnings_signal"].iloc[0] > result["earnings_signal"].iloc[1]
+
 
 class TestApplyFilters:
     def test_applyFilters_x1DominantLowGrowth_rejectsOnlyMatchingRows(self):
@@ -478,6 +514,56 @@ class TestApplyFilters:
         assert filtered["symbol"].tolist() == ["BBB"]
         assert rejected["symbol"].tolist() == ["AAA"]
         assert rejected["reason"].tolist() == ["x1_dominant_negative_momentum"]
+
+    def test_applyFilters_minMarketCap_rejectsSmallCaps(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "market_cap": 900_000_000,
+                },
+                {
+                    "symbol": "BBB",
+                    "period_end": "2024-03-31",
+                    "announcement_datetime": "2024-05-01T10:00:00",
+                    "equity": 100,
+                    "net_income_ttm": 80,
+                    "previous_net_income_ttm": 10,
+                    "operating_profit_ttm": 20,
+                    "firm_value": 200,
+                    "shares_outstanding": 1,
+                    "avg_turnover_20d": 2_000_000,
+                    "market_cap": 2_500_000_000,
+                },
+            ]
+        )
+
+        filtered, rejected = apply_filters(
+            data,
+            FilterSettings(
+                require_positive_equity=False,
+                require_positive_net_income_ttm=False,
+                require_positive_previous_net_income_ttm=False,
+                require_positive_operating_profit_ttm=False,
+                require_positive_firm_value=False,
+                require_shares_outstanding=False,
+                min_avg_turnover_20d=0,
+                min_market_cap=1_000_000_000,
+            ),
+        )
+
+        assert filtered["symbol"].tolist() == ["BBB"]
+        assert rejected["symbol"].tolist() == ["AAA"]
+        assert rejected["reason"].tolist() == ["small_market_cap"]
 
     def test_applyFilters_invalidRows_returnsFilteredAndRejectedReasons(self):
         data = pd.DataFrame(

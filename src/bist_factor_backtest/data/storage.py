@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     operating_profit_ttm DOUBLE,
     previous_net_income_ttm DOUBLE,
     net_income_growth DOUBLE,
+    ni_ttm_growth_yoy DOUBLE,
+    op_ttm_growth_yoy DOUBLE,
+    earnings_acceleration DOUBLE,
+    profitability_quality_combo DOUBLE,
     firm_value_price DOUBLE,
     firm_value_price_date DATE,
     firm_value DOUBLE,
@@ -151,6 +155,10 @@ CREATE TABLE IF NOT EXISTS backtest_selected_positions (
     net_income_ttm DOUBLE,
     previous_net_income_ttm DOUBLE,
     net_income_growth DOUBLE,
+    ni_ttm_growth_yoy DOUBLE,
+    op_ttm_growth_yoy DOUBLE,
+    earnings_acceleration DOUBLE,
+    profitability_quality_combo DOUBLE,
     equity DOUBLE,
     operating_profit_ttm DOUBLE,
     firm_value DOUBLE,
@@ -238,6 +246,15 @@ class DuckDbStorage:
         snapshot_columns = self.connection.execute("PRAGMA table_info('financial_snapshots')").df()["name"].tolist()
         if "announcement_source_url" not in snapshot_columns:
             self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN announcement_source_url TEXT")
+        for column in ["ni_ttm_growth_yoy", "op_ttm_growth_yoy", "earnings_acceleration", "profitability_quality_combo"]:
+            if column not in snapshot_columns:
+                self.connection.execute(f"ALTER TABLE financial_snapshots ADD COLUMN {column} DOUBLE")
+                snapshot_columns.append(column)
+        position_columns = self.connection.execute("PRAGMA table_info('backtest_selected_positions')").df()["name"].tolist()
+        for column in ["ni_ttm_growth_yoy", "op_ttm_growth_yoy", "earnings_acceleration", "profitability_quality_combo"]:
+            if column not in position_columns:
+                self.connection.execute(f"ALTER TABLE backtest_selected_positions ADD COLUMN {column} DOUBLE")
+                position_columns.append(column)
         self._ensure_text_column_type(
             table="financial_statements",
             columns=["statement_id", "raw_hash"],

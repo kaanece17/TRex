@@ -13,11 +13,20 @@
         <span class="eyebrow">TRex Research</span>
         <strong>TRex Yonetim Paneli</strong>
       </div>
+      {% if request.session.get("authenticated") and market_links %}
+      <nav class="market-switch">
+        {% for link in market_links %}
+        <a href="{{ link.url }}" class="nav-pill {% if link.market_id == selected_market %}nav-pill-active{% endif %}">
+          {{ link.market_label }}
+        </a>
+        {% endfor %}
+      </nav>
+      {% endif %}
       {% if request.session.get("authenticated") %}
       <nav class="topnav">
-        <a href="/" class="nav-pill">Genel Durum</a>
-        <a href="/positions?config={{ selected_profile }}" class="nav-pill">Pozisyonlar</a>
-        <a href="/missing-financials?config={{ selected_profile }}" class="nav-pill">Eksik Finansallar</a>
+        <a href="/?market={{ selected_market }}&config={{ selected_profile }}" class="nav-pill">Genel Durum</a>
+        <a href="/positions?market={{ selected_market }}&config={{ selected_profile }}" class="nav-pill">Pozisyonlar</a>
+        <a href="/missing-financials?market={{ selected_market }}&config={{ selected_profile }}" class="nav-pill">Eksik Finansallar</a>
         <form method="post" action="/admin/logout">
           <button type="submit" class="nav-pill nav-pill-ghost">Cikis</button>
         </form>

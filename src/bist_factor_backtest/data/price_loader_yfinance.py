@@ -6,18 +6,28 @@ import pandas as pd
 import yfinance as yf
 
 
-def to_yahoo_symbol(symbol: str) -> str:
-    return f"{symbol.upper()}.IS"
+def to_yahoo_symbol(symbol: str, suffix: str | None = ".IS") -> str:
+    normalized = symbol.upper()
+    return f"{normalized}{suffix}" if suffix else normalized
 
 
-def normalize_yahoo_symbol(yahoo_symbol: str) -> str:
-    return yahoo_symbol.replace(".IS", "").upper()
+def normalize_yahoo_symbol(yahoo_symbol: str, suffix: str | None = ".IS") -> str:
+    if suffix:
+        return yahoo_symbol.replace(suffix, "").upper()
+    return yahoo_symbol.upper()
 
 
 class YFinancePriceLoader:
-    def load(self, symbols: list[str], start_date: date, end_date: date) -> pd.DataFrame:
+    def load(
+        self,
+        symbols: list[str],
+        start_date: date,
+        end_date: date,
+        *,
+        yahoo_suffix: str | None = ".IS",
+    ) -> pd.DataFrame:
         frames = []
-        yahoo_symbols = [to_yahoo_symbol(symbol) for symbol in symbols]
+        yahoo_symbols = [to_yahoo_symbol(symbol, yahoo_suffix) for symbol in symbols]
         for chunk in _chunked(yahoo_symbols, 30):
             data = yf.download(
                 chunk,
@@ -36,7 +46,7 @@ class YFinancePriceLoader:
                     continue
                 symbol_data = symbol_data.reset_index()
                 symbol_data.columns = [_normalize_column_name(column) for column in symbol_data.columns]
-                symbol_data["symbol"] = normalize_yahoo_symbol(yahoo_symbol)
+                symbol_data["symbol"] = normalize_yahoo_symbol(yahoo_symbol, yahoo_suffix)
                 symbol_data = symbol_data.rename(columns={"adj_close": "adjusted_close"})
                 required_columns = ["symbol", "date", "open", "high", "low", "close", "adjusted_close", "volume"]
                 if not set(required_columns).issubset(symbol_data.columns):

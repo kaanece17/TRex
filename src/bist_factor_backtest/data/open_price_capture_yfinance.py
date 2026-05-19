@@ -18,9 +18,10 @@ class YFinanceOpenPriceCaptureLoader:
         market_open_time: str = "10:00",
         timezone: str = "Europe/Istanbul",
         interval: str = "1m",
+        yahoo_suffix: str | None = ".IS",
     ) -> pd.DataFrame:
         frames: list[dict[str, object]] = []
-        yahoo_symbols = [to_yahoo_symbol(symbol) for symbol in symbols]
+        yahoo_symbols = [to_yahoo_symbol(symbol, yahoo_suffix) for symbol in symbols]
         start = trade_date
         end = trade_date + timedelta(days=1)
         for chunk in _chunked(yahoo_symbols, 30):
@@ -36,7 +37,7 @@ class YFinanceOpenPriceCaptureLoader:
                 group_by="ticker",
             )
             for yahoo_symbol in chunk:
-                symbol = normalize_yahoo_symbol(yahoo_symbol)
+                symbol = normalize_yahoo_symbol(yahoo_symbol, yahoo_suffix)
                 symbol_data = _extract_symbol_frame(data, yahoo_symbol)
                 row = _build_capture_row(
                     symbol_data=symbol_data,

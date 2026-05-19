@@ -14,10 +14,11 @@
       </p>
     </div>
     <form method="get" action="/positions" class="filter-grid">
+      <input type="hidden" name="market" value="{{ selected_market }}">
       <div class="field">
         <label for="config">Profil</label>
         <select id="config" name="config">
-          {% for profile in manifest.profiles %}
+          {% for profile in available_profiles %}
           <option value="{{ profile.profile_id }}" {% if profile.profile_id == selected_profile %}selected{% endif %}>{{ profile.label }}</option>
           {% endfor %}
         </select>

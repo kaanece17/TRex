@@ -5,6 +5,7 @@ import math
 from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 import json
 
@@ -70,13 +71,47 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             return None
         return RedirectResponse("/admin/login", status_code=302)
 
-    def selected_profile(request: Request, manifest: dict) -> str | None:
-        requested = request.query_params.get("config")
+    def selected_market(request: Request, manifest: dict) -> str | None:
         profiles = manifest.get("profiles", [])
+        available_markets = list(dict.fromkeys(profile.get("market_id", "tr") for profile in profiles))
+        requested = request.query_params.get("market")
+        if requested in available_markets:
+            return requested
+        if "tr" in available_markets:
+            return "tr"
+        return available_markets[0] if available_markets else None
+
+    def profiles_for_market(manifest: dict, market_id: str | None) -> list[dict]:
+        profiles = manifest.get("profiles", [])
+        if market_id is None:
+            return profiles
+        return [profile for profile in profiles if profile.get("market_id", "tr") == market_id]
+
+    def selected_profile(request: Request, manifest: dict, market_id: str | None) -> str | None:
+        requested = request.query_params.get("config")
+        profiles = profiles_for_market(manifest, market_id)
         valid_ids = [profile["profile_id"] for profile in profiles]
         if requested in valid_ids:
             return requested
         return valid_ids[0] if valid_ids else None
+
+    def market_links(request: Request, manifest: dict) -> list[dict[str, str]]:
+        profiles = manifest.get("profiles", [])
+        seen: set[str] = set()
+        links: list[dict[str, str]] = []
+        for profile in profiles:
+            market_id = profile.get("market_id", "tr")
+            if market_id in seen:
+                continue
+            seen.add(market_id)
+            params = [(key, value) for key, value in request.query_params.multi_items() if key not in {"market", "config"}]
+            params.append(("market", market_id))
+            url = request.url.path
+            query = urlencode(params)
+            if query:
+                url = f"{url}?{query}"
+            links.append({"market_id": market_id, "market_label": profile.get("market_label", market_id.upper()), "url": url})
+        return links
 
     def regime_for_month(profile_data: dict[str, object], month: str | None) -> dict[str, object]:
         if month is None:
@@ -129,7 +164,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         if auth is not None:
             return auth
         manifest = load_manifest()
-        profile_id = selected_profile(request, manifest)
+        market_id = selected_market(request, manifest)
+        market_profiles = profiles_for_market(manifest, market_id)
+        profile_id = selected_profile(request, manifest, market_id)
         profile_data = load_profile_data(profile_id) if profile_id else {}
         preview_month = profile_data.get("summary", {}).get("preview_month")
         current_month = profile_data.get("summary", {}).get("current_month")
@@ -151,6 +188,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             "home.html",
             {
                 "manifest": manifest,
+                "available_profiles": market_profiles,
+                "market_links": market_links(request, manifest),
+                "selected_market": market_id,
                 "selected_profile": profile_id,
                 "summary": profile_data.get("summary", {}),
                 "current_positions": current_positions,
@@ -167,7 +207,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         if auth is not None:
             return auth
         manifest = load_manifest()
-        profile_id = selected_profile(request, manifest)
+        market_id = selected_market(request, manifest)
+        market_profiles = profiles_for_market(manifest, market_id)
+        profile_id = selected_profile(request, manifest, market_id)
         profile_data = load_profile_data(profile_id) if profile_id else {}
         all_positions = profile_data.get("selected_positions", [])
         preview_month = profile_data.get("summary", {}).get("preview_month")
@@ -202,6 +244,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             "positions.html",
             {
                 "manifest": manifest,
+                "available_profiles": market_profiles,
+                "market_links": market_links(request, manifest),
+                "selected_market": market_id,
                 "selected_profile": profile_id,
                 "summary": profile_data.get("summary", {}),
                 "months": months,
@@ -223,7 +268,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         if auth is not None:
             return auth
         manifest = load_manifest()
-        profile_id = selected_profile(request, manifest)
+        market_id = selected_market(request, manifest)
+        market_profiles = profiles_for_market(manifest, market_id)
+        profile_id = selected_profile(request, manifest, market_id)
         profile_data = load_profile_data(profile_id) if profile_id else {}
         rows = profile_data.get("missing_financials", [])
         months = sorted({str(row.get("month")) for row in profile_data.get("missing_financials", []) if row.get("month")})
@@ -240,6 +287,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             "missing_financials.html",
             {
                 "manifest": manifest,
+                "available_profiles": market_profiles,
+                "market_links": market_links(request, manifest),
+                "selected_market": market_id,
                 "selected_profile": profile_id,
                 "months": months,
                 "years": years,

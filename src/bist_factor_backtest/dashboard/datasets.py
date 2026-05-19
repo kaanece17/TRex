@@ -40,6 +40,8 @@ class RefreshStatus:
     profile_id: str
     label: str
     config_path: str
+    market_id: str
+    market_label: str
     run_id: str | None
     active: bool
     last_refreshed_at: str
@@ -169,6 +171,8 @@ def build_profile_dashboard_dataset(
         profile_id=profile.id,
         label=profile.label,
         config_path=str(profile.config_path),
+        market_id=profile.market_id,
+        market_label=profile.market_label,
         run_id=str(result["run_id"]),
         active=profile.active,
         last_refreshed_at=datetime.now(UTC).isoformat(),
@@ -809,6 +813,8 @@ def empty_status(profile: DashboardProfile, message: str) -> RefreshStatus:
         profile_id=profile.id,
         label=profile.label,
         config_path=str(profile.config_path),
+        market_id=profile.market_id,
+        market_label=profile.market_label,
         run_id=None,
         active=profile.active,
         last_refreshed_at=datetime.now(UTC).isoformat(),
@@ -824,6 +830,8 @@ def active_profile_manifest() -> list[dict[str, object]]:
             "id": profile.id,
             "label": profile.label,
             "config_path": str(profile.config_path),
+            "market_id": profile.market_id,
+            "market_label": profile.market_label,
             "active": profile.active,
         }
         for profile in active_dashboard_profiles()

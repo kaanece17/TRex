@@ -130,10 +130,15 @@ class TestReconstructMembershipFromCurrent:
         assert result["source_type"].tolist() == ["manual_seed"]
 
     def test_buildUniverseMonthlySnapshot_activeMembership_returnsMonthlyRowsWithQuality(self):
-        membership = build_current_static_membership(["AAA"], date(2020, 1, 1), "source")
+        membership = build_current_static_membership(
+            ["AAA"],
+            date(2020, 1, 1),
+            "source",
+            universe_name="US_INDUSTRIALS",
+        )
         rebalance_dates = pd.DataFrame([{"month": "2020-01", "rebalance_date": date(2020, 1, 2)}])
 
-        result = build_universe_monthly_snapshot(membership, rebalance_dates, "BIST_SANAYI")
+        result = build_universe_monthly_snapshot(membership, rebalance_dates, "US_INDUSTRIALS")
 
         assert result["symbol"].tolist() == ["AAA"]
         assert result["source_quality"].tolist() == ["medium"]
