@@ -26,8 +26,12 @@ point_in_time:
   if_only_date_available: previous_day_only
 
 strategy:
-  top_n: 5
+  top_n: 6
   hold_buffer_rank:
+  regime_filter_mode:
+  regime_filter_top_n:
+  regime_filter_lookback_days: 200
+  regime_filter_breadth_threshold: 0.5
   rebalance_frequency: monthly
   rebalance_day: first_trading_day
   rebalance_time: market_open
@@ -35,15 +39,24 @@ strategy:
   buy_rule: first_trading_day_open
   sell_rule: last_trading_day_open
   execution_mode: rebalance_open_to_open
-  weighting: score_weight_capped
-  score_weight_cap: 0.30
+  weighting: equal_weight
+  score_weight_cap:
   if_less_than_top_n: use_available
+  technical_confirmation_mode: high_score_negative_momentum_veto
+  technical_confirmation_rank_threshold: 2
+  technical_confirmation_lookback_days: 20
+  technical_confirmation_return_threshold: 0.0
+  technical_confirmation_redistribute: true
 
 scoring:
   formula: note_best_fit
   use_ttm: false
   firm_value_mode: market_cap
   growth_mode: raw
+  x1_weight: 1.0
+  x2_weight: 1.0
+  x1_cap_quantile: 0.95
+  x2_cap_quantile: 0.95
 
 costs:
   commission_rate: 0.002
@@ -55,6 +68,9 @@ filters:
   require_positive_operating_profit_ttm: false
   require_positive_firm_value: true
   require_shares_outstanding: true
+  max_net_income_to_equity:
+  x1_dominant_share_threshold: 0.90
+  recent_return_20d_threshold: 0.0
   min_avg_turnover_20d: 0
 
 backtest:

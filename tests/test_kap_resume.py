@@ -3,12 +3,16 @@ from __future__ import annotations
 import pandas as pd
 
 from bist_factor_backtest.cli import (
+    _derive_isyatirim_symbol_status,
+    _expected_latest_reported_period,
+    _filter_symbols_by_latest_status,
     _filter_only_incomplete_symbols,
     _replace_items_for_statements,
     _symbol_completeness,
     _upsert_statements,
     _upsert_symbol_load_status,
 )
+from bist_factor_backtest.data.kap_loader import KapFinancialLoader
 from bist_factor_backtest.data.storage import DuckDbStorage
 
 
@@ -150,3 +154,84 @@ class TestKapResumeUpsert:
         expected = ["BBB", "CCC"]
 
         assert result == expected
+
+    def test_filterOnlyIncompleteSymbols_staleSymbol_remainsRetryable(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        storage = DuckDbStorage(db_path)
+        storage.initialize()
+        _upsert_symbol_load_status(storage, "AAA", "stale", "isyatirim_stale_source")
+        storage.close()
+
+        result = _filter_only_incomplete_symbols(["AAA", "BBB"], db_path)
+
+        assert result == ["AAA", "BBB"]
+
+    def test_filterSymbolsByLatestStatus_includeStale_returnsOnlyStale(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        storage = DuckDbStorage(db_path)
+        storage.initialize()
+        _upsert_symbol_load_status(storage, "AAA", "stale", "isyatirim_stale_source")
+        _upsert_symbol_load_status(storage, "BBB", "completed", "isyatirim_loaded")
+        storage.close()
+
+        result = _filter_symbols_by_latest_status(
+            ["AAA", "BBB", "CCC"],
+            db_path,
+            include_statuses={"stale"},
+        )
+
+        assert result == ["AAA"]
+
+
+class TestIsYatirimFreshnessStatus:
+    def test_expectedLatestReportedPeriod_returnsConservativeQuarterByMonth(self):
+        assert _expected_latest_reported_period(pd.Timestamp("2026-02-15").date()) == pd.Timestamp("2025-09-01").date()
+        assert _expected_latest_reported_period(pd.Timestamp("2026-04-15").date()) == pd.Timestamp("2025-12-01").date()
+        assert _expected_latest_reported_period(pd.Timestamp("2026-07-15").date()) == pd.Timestamp("2026-03-01").date()
+
+    def test_deriveIsyatirimSymbolStatus_marksStaleWhenLatestPeriodBehindExpected(self):
+        statements = pd.DataFrame(
+            [
+                {"statement_id": "AAA-202509", "symbol": "AAA", "period_end": pd.Timestamp("2025-09-01").date()},
+                {"statement_id": "AAA-202506", "symbol": "AAA", "period_end": pd.Timestamp("2025-06-01").date()},
+            ]
+        )
+
+        result = _derive_isyatirim_symbol_status(statements, as_of_date=pd.Timestamp("2026-05-19").date())
+
+        assert result == ("stale", "isyatirim_stale_source")
+
+    def test_deriveIsyatirimSymbolStatus_marksCompletedWhenLatestPeriodMeetsExpected(self):
+        statements = pd.DataFrame(
+            [
+                {"statement_id": "AAA-202512", "symbol": "AAA", "period_end": pd.Timestamp("2025-12-01").date()},
+            ]
+        )
+
+        result = _derive_isyatirim_symbol_status(statements, as_of_date=pd.Timestamp("2026-05-19").date())
+
+        assert result == ("completed", "isyatirim_loaded")
+
+
+class TestKapLoaderValidation:
+    def test_buildFromDisclosures_skipsFuturePeriodEndAfterAnnouncement(self):
+        loader = KapFinancialLoader()
+        result = loader.build_from_disclosures(
+            "AAA",
+            [
+                {
+                    "disclosureIndex": 123,
+                    "publishDateTime": "2026-05-11T18:00:00",
+                    "publishDate": "2026-05-11T18:00:00",
+                    "periodEndDate": "2026-09-30",
+                    "year": 2026,
+                    "ruleType": "Q3",
+                    "financialTableType": None,
+                    "statementType": None,
+                }
+            ],
+        )
+
+        assert result.statements.empty
+        assert not result.failures.empty
+        assert "kap_invalid_period_end_after_announcement" in result.failures["reason"].tolist()

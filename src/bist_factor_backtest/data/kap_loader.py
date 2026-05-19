@@ -140,6 +140,19 @@ class KapFinancialLoader:
             statement_id = f"{symbol.upper()}-{disclosure_index}"
             announcement_datetime = _parse_announcement_datetime(disclosure)
             period_end = _parse_period_end(disclosure)
+            if (
+                period_end is not None
+                and announcement_datetime is not None
+                and period_end > announcement_datetime.date()
+            ):
+                failures.append(
+                    {
+                        "symbol": symbol,
+                        "reason": "kap_invalid_period_end_after_announcement",
+                        "detail": f"{disclosure_index}: period_end={period_end.isoformat()} announcement={announcement_datetime.date().isoformat()}",
+                    }
+                )
+                continue
             statements.append(
                 {
                     "statement_id": statement_id,

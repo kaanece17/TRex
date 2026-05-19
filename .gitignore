@@ -28,6 +28,7 @@ data/processed/
 reports/*.xlsx
 reports/*.csv
 outputs/
+dist/
 node_modules
 node_modules/
 src/*.egg-info/

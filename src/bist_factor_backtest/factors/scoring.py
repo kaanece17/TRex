@@ -72,16 +72,31 @@ def _attach_component_shares(result: pd.DataFrame) -> None:
 
 def _attach_selection_score(result: pd.DataFrame, scoring: ScoringConfig | None) -> None:
     result["selection_score"] = result["score"]
-    if scoring is None or scoring.momentum_rank_weight == 0:
+    if scoring is None:
         return
-    if "recent_return_20d" not in result.columns:
-        return
-    momentum = pd.to_numeric(result["recent_return_20d"], errors="coerce")
-    if momentum.notna().sum() == 0:
-        return
-    momentum_pct = momentum.rank(method="average", pct=True)
-    momentum_bonus = (momentum_pct - 0.5).fillna(0.0) * scoring.momentum_rank_weight
-    result["selection_score"] = result["score"] + momentum_bonus
+
+    if scoring.momentum_rank_weight != 0 and "recent_return_20d" in result.columns:
+        momentum = pd.to_numeric(result["recent_return_20d"], errors="coerce")
+        if momentum.notna().sum() > 0:
+            momentum_pct = momentum.rank(method="average", pct=True)
+            momentum_bonus = (momentum_pct - 0.5).fillna(0.0) * scoring.momentum_rank_weight
+            result["selection_score"] = result["selection_score"] + momentum_bonus
+
+    if (
+        scoring.cheap_value_trap_penalty != 0
+        and scoring.cheap_value_trap_fv_to_equity_threshold is not None
+        and scoring.x1_dominant_value_penalty_share_threshold is not None
+        and "firm_value" in result.columns
+        and "equity" in result.columns
+        and "x1_share" in result.columns
+    ):
+        fv_to_equity = pd.to_numeric(result["firm_value"], errors="coerce") / pd.to_numeric(result["equity"], errors="coerce")
+        penalty_mask = (
+            (result["x1_share"] >= scoring.x1_dominant_value_penalty_share_threshold)
+            & (fv_to_equity >= 0)
+            & (fv_to_equity < scoring.cheap_value_trap_fv_to_equity_threshold)
+        )
+        result["selection_score"] = result["selection_score"] - penalty_mask.fillna(False).astype(float) * scoring.cheap_value_trap_penalty
 
 
 def _cap_series_at_quantile(result: pd.DataFrame, column: str, quantile: float | None) -> None:

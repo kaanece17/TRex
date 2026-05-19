@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or "TRex Yonetim Paneli" }}</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+  </head>
+  <body>
+    <div class="app-bg"></div>
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="eyebrow">TRex Research</span>
+        <strong>TRex Yonetim Paneli</strong>
+      </div>
+      {% if request.session.get("authenticated") %}
+      <nav class="topnav">
+        <a href="/" class="nav-pill">Genel Durum</a>
+        <a href="/positions?config={{ selected_profile }}" class="nav-pill">Pozisyonlar</a>
+        <a href="/missing-financials?config={{ selected_profile }}" class="nav-pill">Eksik Finansallar</a>
+        <form method="post" action="/admin/logout">
+          <button type="submit" class="nav-pill nav-pill-ghost">Cikis</button>
+        </form>
+      </nav>
+      {% endif %}
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

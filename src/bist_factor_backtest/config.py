@@ -76,6 +76,15 @@ class StrategyConfig(_Model):
     weighting: str = "equal_weight"
     score_weight_cap: float | None = None
     if_less_than_top_n: str = "use_available"
+    technical_confirmation_mode: str | None = None
+    technical_confirmation_rank_threshold: int | None = None
+    technical_confirmation_lookback_days: int = 60
+    technical_confirmation_return_threshold: float = 0.0
+    technical_confirmation_redistribute: bool = False
+    x1_soft_penalty_mode: str | None = None
+    x1_soft_penalty_share_threshold: float | None = None
+    x1_soft_penalty_return_60d_threshold: float | None = None
+    x1_soft_penalty_amount: float = 0.0
 
 
 class ScoringConfig(_Model):
@@ -86,6 +95,9 @@ class ScoringConfig(_Model):
     x1_weight: float = 1.0
     x2_weight: float = 1.0
     momentum_rank_weight: float = 0.0
+    cheap_value_trap_penalty: float = 0.0
+    cheap_value_trap_fv_to_equity_threshold: float | None = None
+    x1_dominant_value_penalty_share_threshold: float | None = None
     x1_cap_quantile: float | None = None
     x2_cap_quantile: float | None = None
 
@@ -106,6 +118,8 @@ class FiltersConfig(_Model):
     x1_dominant_share_threshold: float | None = None
     recent_return_20d_threshold: float | None = None
     min_recent_return_20d: float | None = None
+    min_growth_when_x1_dominant_share: float | None = None
+    x1_dominant_growth_share_threshold: float | None = None
     min_avg_turnover_20d: float = 1_000_000
 
 

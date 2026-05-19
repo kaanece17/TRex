@@ -18,7 +18,11 @@ from bist_factor_backtest.data.point_in_time import get_latest_known_annual_fina
 from bist_factor_backtest.data.universe import get_universe_for_date
 from bist_factor_backtest.factors.filters import FilterSettings, apply_filters
 from bist_factor_backtest.factors.firm_value import attach_market_cap_firm_value
-from bist_factor_backtest.factors.liquidity import attach_avg_turnover_20d, attach_recent_return_20d
+from bist_factor_backtest.factors.liquidity import (
+    attach_avg_turnover_20d,
+    attach_recent_return_20d,
+    attach_recent_return_60d,
+)
 from bist_factor_backtest.factors.scoring import calculate_scores
 
 
@@ -44,7 +48,9 @@ def run_monthly_rotation_backtest(
         months = get_backtest_months(calendar_prices, config.backtest.start_date, config.backtest.end_date)
     monthly_results = []
     selected_positions = []
+    planned_positions = []
     rejected_candidates = []
+    candidate_diagnostics = []
     portfolio_value = config.backtest.initial_capital
     previous_held_symbols: set[str] = set()
     selection_plan: list[dict] = []
@@ -78,8 +84,18 @@ def run_monthly_rotation_backtest(
         else:
             candidates = attach_avg_turnover_20d(candidates, feature_prices, buy_date)
             candidates = attach_recent_return_20d(candidates, feature_prices, buy_date)
+            candidates = attach_recent_return_60d(candidates, feature_prices, buy_date)
             candidates = attach_market_cap_firm_value(candidates, feature_prices, rebalance_datetime)
             candidates = calculate_scores(candidates, config.scoring)
+            candidates = _apply_x1_soft_penalty_rule(candidates, config)
+            ranked_all = candidates.sort_values(["selection_score", "score"], ascending=False).reset_index(drop=True)
+            ranked_all["month"] = month
+            ranked_all["rebalance_datetime"] = rebalance_datetime
+            ranked_all["buy_date"] = buy_date
+            ranked_all["sell_date"] = sell_date
+            ranked_all["effective_top_n"] = effective_top_n
+            ranked_all["provisional_rank"] = ranked_all.index + 1
+            candidate_diagnostics.append(ranked_all)
             filter_settings = FilterSettings(**config.filters.model_dump())
             filtered, rejected = apply_filters(candidates, filter_settings)
             rejected["month"] = month
@@ -96,6 +112,7 @@ def run_monthly_rotation_backtest(
             weighting=config.strategy.weighting,
             score_weight_cap=config.strategy.score_weight_cap,
         )
+        positions = _apply_technical_confirmation_rule(positions, config)
         selection_plan.append(
             {
                 "month": month,
@@ -141,6 +158,16 @@ def run_monthly_rotation_backtest(
             position_returns.append(position)
 
         positions_result = pd.DataFrame(position_returns)
+        if not positions.empty:
+            planned_snapshot = positions.copy()
+            planned_snapshot["run_id"] = run_id
+            planned_snapshot["month"] = plan["month"]
+            planned_snapshot["rebalance_datetime"] = plan["rebalance_datetime"]
+            planned_snapshot["buy_date"] = plan["buy_date"]
+            planned_snapshot["sell_date"] = plan["sell_date"]
+            planned_snapshot["used_period_end"] = planned_snapshot["period_end"]
+            planned_snapshot["used_announcement_datetime"] = planned_snapshot.get("announcement_datetime")
+            planned_positions.append(planned_snapshot)
         if positions_result.empty:
             gross_return = 0.0
             net_return = 0.0
@@ -177,7 +204,9 @@ def run_monthly_rotation_backtest(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "monthly_results": pd.DataFrame(monthly_results),
         "selected_positions": pd.concat(selected_positions, ignore_index=True) if selected_positions else pd.DataFrame(),
+        "planned_positions": pd.concat(planned_positions, ignore_index=True) if planned_positions else pd.DataFrame(),
         "rejected_candidates": pd.concat(rejected_candidates, ignore_index=True) if rejected_candidates else pd.DataFrame(),
+        "candidate_diagnostics": pd.concat(candidate_diagnostics, ignore_index=True) if candidate_diagnostics else pd.DataFrame(),
     }
 
 
@@ -241,6 +270,88 @@ def _resolve_effective_top_n(
     if breadth < config.strategy.regime_filter_breadth_threshold:
         return config.strategy.regime_filter_top_n
     return base_top_n
+
+
+def _apply_technical_confirmation_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+) -> pd.DataFrame:
+    mode = config.strategy.technical_confirmation_mode
+    if positions.empty or not mode:
+        return positions
+    if mode != "high_score_negative_momentum_veto":
+        return positions
+
+    rank_threshold = config.strategy.technical_confirmation_rank_threshold
+    if rank_threshold is None or rank_threshold <= 0:
+        return positions
+
+    lookback_days = config.strategy.technical_confirmation_lookback_days
+    if lookback_days == 20:
+        return_column = "recent_return_20d"
+    elif lookback_days == 60:
+        return_column = "recent_return_60d"
+    else:
+        return positions
+    if return_column not in positions.columns:
+        return positions
+
+    result = positions.copy()
+    result["technical_score_rank"] = result["score"].rank(method="first", ascending=False).astype(int)
+    veto_mask = (
+        (result["technical_score_rank"] <= rank_threshold)
+        & pd.to_numeric(result[return_column], errors="coerce").lt(
+            config.strategy.technical_confirmation_return_threshold
+        )
+    )
+    if not veto_mask.any():
+        return result
+
+    survivors = result[~veto_mask].copy()
+    if survivors.empty:
+        return survivors
+
+    if config.strategy.technical_confirmation_redistribute:
+        survivors["weight"] = survivors["weight"] / survivors["weight"].sum()
+
+    return survivors
+
+
+def _apply_x1_soft_penalty_rule(
+    candidates: pd.DataFrame,
+    config: BacktestConfig,
+) -> pd.DataFrame:
+    mode = config.strategy.x1_soft_penalty_mode
+    if candidates.empty or not mode:
+        return candidates
+    if mode != "x1_heavy_low_60d_penalty":
+        return candidates
+
+    share_threshold = config.strategy.x1_soft_penalty_share_threshold
+    return_60d_threshold = config.strategy.x1_soft_penalty_return_60d_threshold
+    penalty = config.strategy.x1_soft_penalty_amount
+    if (
+        share_threshold is None
+        or return_60d_threshold is None
+        or penalty <= 0
+        or "recent_return_60d" not in candidates.columns
+    ):
+        return candidates
+
+    result = candidates.copy()
+    x_total = pd.to_numeric(result["x1"], errors="coerce") + pd.to_numeric(result["x2"], errors="coerce")
+    x1_share = pd.to_numeric(result["x1"], errors="coerce") / x_total
+    guard_mask = (
+        x1_share.ge(share_threshold)
+        & pd.to_numeric(result["recent_return_60d"], errors="coerce").lt(return_60d_threshold)
+    )
+    if not guard_mask.any():
+        return result
+
+    result.loc[guard_mask, "selection_score"] = (
+        pd.to_numeric(result.loc[guard_mask, "selection_score"], errors="coerce") - penalty
+    )
+    return result
 
 
 def _calculate_universe_breadth_above_sma(

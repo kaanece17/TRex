@@ -1,0 +1,16 @@
+[Unit]
+Description=TRex Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=trex
+Group=trex
+WorkingDirectory=/opt/trex-dashboard
+EnvironmentFile=/opt/trex-dashboard/.env
+ExecStart=/opt/trex-dashboard/.venv/bin/python /opt/trex-dashboard/run_dashboard.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
