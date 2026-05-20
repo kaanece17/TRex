@@ -1,73 +1,114 @@
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 
-from bist_factor_backtest.data.point_in_time import get_latest_known_financials
+from bist_factor_backtest.data.point_in_time import get_latest_known_annual_financials_with_stale_replacement
 
 
-class TestGetLatestKnownFinancials:
-    def test_getLatestKnownFinancials_futureAnnouncement_excludesFutureStatement(self):
-        rebalance_datetime = pd.Timestamp("2024-05-01 10:00", tz="Europe/Istanbul")
+class TestPointInTimeAnnualReplacement:
+    def test_replacesStaleAnnualBase_withLatestKnownQuarter(self):
         financials = pd.DataFrame(
             [
                 {
-                    "symbol": "ABC",
-                    "period_end": "2024-03-31",
-                    "announcement_datetime": "2024-05-08 18:00",
-                    "announcement_date": "2024-05-08",
+                    "symbol": "CCOLA",
+                    "period_end": "2023-12-01",
+                    "fiscal_year": 2023,
+                    "fiscal_period": "Q4",
+                    "fiscal_quarter": 4,
+                    "announcement_datetime": pd.NaT,
+                    "announcement_date": date(2024, 3, 13),
+                    "net_income": 100.0,
+                    "equity": 1000.0,
+                    "operating_profit": 50.0,
+                    "cash": 10.0,
+                    "total_debt": 20.0,
+                    "shares_outstanding": 1.0,
+                    "shares_announcement_datetime": pd.NaT,
+                    "shares_source_url": "annual-shares",
+                    "net_income_ttm": 100.0,
+                    "operating_profit_ttm": 50.0,
+                    "previous_net_income_ttm": 80.0,
+                    "net_income_growth": 0.25,
+                    "source_statement_id": "annual-2023q4",
+                    "source_url": "annual-url",
+                    "announcement_source_url": "annual-ann",
+                    "raw_hash": "annual",
                 },
                 {
-                    "symbol": "ABC",
-                    "period_end": "2023-12-31",
-                    "announcement_datetime": "2024-03-08 18:00",
-                    "announcement_date": "2024-03-08",
+                    "symbol": "CCOLA",
+                    "period_end": "2024-09-01",
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q3",
+                    "fiscal_quarter": 3,
+                    "announcement_datetime": pd.NaT,
+                    "announcement_date": date(2024, 11, 4),
+                    "net_income": 140.0,
+                    "equity": 1200.0,
+                    "operating_profit": 70.0,
+                    "cash": 15.0,
+                    "total_debt": 25.0,
+                    "shares_outstanding": 1.0,
+                    "shares_announcement_datetime": pd.NaT,
+                    "shares_source_url": "q3-shares",
+                    "net_income_ttm": 180.0,
+                    "operating_profit_ttm": 90.0,
+                    "previous_net_income_ttm": 120.0,
+                    "net_income_growth": 0.50,
+                    "source_statement_id": "q3-2024",
+                    "source_url": "q3-url",
+                    "announcement_source_url": "q3-ann",
+                    "raw_hash": "q3",
                 },
             ]
         )
-        expected = pd.Timestamp("2023-12-31")
 
-        result = get_latest_known_financials(financials, rebalance_datetime)
-
-        assert pd.Timestamp(result["period_end"].iloc[0]) == expected
-
-    def test_getLatestKnownFinancials_sameDayDateOnly_excludesSameDayStatement(self):
-        rebalance_datetime = pd.Timestamp("2024-05-02 10:00", tz="Europe/Istanbul")
-        first_trading_day = date(2024, 5, 2)
-        financials = pd.DataFrame(
-            [
-                {
-                    "symbol": "ABC",
-                    "period_end": "2024-03-31",
-                    "announcement_datetime": None,
-                    "announcement_date": "2024-05-02",
-                },
-                {
-                    "symbol": "ABC",
-                    "period_end": "2023-12-31",
-                    "announcement_datetime": None,
-                    "announcement_date": "2024-04-30",
-                },
-            ]
+        result = get_latest_known_annual_financials_with_stale_replacement(
+            financials,
+            rebalance_datetime=datetime(2025, 1, 2, 10, 0, 0),
+            first_trading_day=date(2025, 1, 2),
         )
-        expected = pd.Timestamp("2023-12-31")
 
-        result = get_latest_known_financials(financials, rebalance_datetime, first_trading_day)
+        assert pd.Timestamp(result["period_end"].iloc[0]) == pd.Timestamp("2024-09-01")
+        assert result["fiscal_quarter"].iloc[0] == 3
+        assert bool(result["annual_base_replaced"].iloc[0]) is True
+        assert pd.Timestamp(result["annual_base_original_period_end"].iloc[0]) == pd.Timestamp("2023-12-01")
 
-        assert pd.Timestamp(result["period_end"].iloc[0]) == expected
-
-    def test_getLatestKnownFinancials_noKnownFinancials_returnsEmptyResult(self):
-        rebalance_datetime = pd.Timestamp("2024-05-01 10:00", tz="Europe/Istanbul")
+    def test_keepsFreshAnnualBase_whenLagIsAcceptable(self):
         financials = pd.DataFrame(
             [
                 {
-                    "symbol": "ABC",
-                    "period_end": "2024-03-31",
-                    "announcement_datetime": "2024-05-08 18:00",
-                    "announcement_date": "2024-05-08",
+                    "symbol": "AAA",
+                    "period_end": "2024-12-01",
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q4",
+                    "fiscal_quarter": 4,
+                    "announcement_datetime": pd.NaT,
+                    "announcement_date": date(2025, 3, 4),
+                    "net_income": 100.0,
+                    "equity": 1000.0,
+                    "operating_profit": 50.0,
+                    "cash": 10.0,
+                    "total_debt": 20.0,
+                    "shares_outstanding": 1.0,
+                    "shares_announcement_datetime": pd.NaT,
+                    "shares_source_url": "annual-shares",
+                    "net_income_ttm": 100.0,
+                    "operating_profit_ttm": 50.0,
+                    "previous_net_income_ttm": 80.0,
+                    "net_income_growth": 0.25,
+                    "source_statement_id": "annual-2024q4",
+                    "source_url": "annual-url",
+                    "announcement_source_url": "annual-ann",
+                    "raw_hash": "annual",
                 }
             ]
         )
 
-        result = get_latest_known_financials(financials, rebalance_datetime)
+        result = get_latest_known_annual_financials_with_stale_replacement(
+            financials,
+            rebalance_datetime=datetime(2025, 5, 2, 10, 0, 0),
+            first_trading_day=date(2025, 5, 2),
+        )
 
-        assert result.empty
+        assert pd.Timestamp(result["period_end"].iloc[0]) == pd.Timestamp("2024-12-01")
+        assert bool(result["annual_base_replaced"].iloc[0]) is False

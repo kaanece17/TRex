@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from bist_factor_backtest.backtest.monthly_rotation import run_monthly_rotation_backtest
+from bist_factor_backtest.cli import _load_membership_for_run
 from bist_factor_backtest.config import load_config
 from bist_factor_backtest.data.storage import DuckDbStorage
 
@@ -32,7 +33,7 @@ def _load_inputs():
     storage.initialize()
     prices = storage.read_table("market_prices")
     financials = storage.read_table("financial_snapshots")
-    membership = storage.read_table("universe_membership")
+    membership = _load_membership_for_run(config)
     storage.close()
     return config, prices, financials, membership
 

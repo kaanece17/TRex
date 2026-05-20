@@ -46,6 +46,10 @@ strategy:
   earnings_quality_max_ni_ttm_growth_yoy: 3.1
   earnings_quality_max_acceleration: 4.6
   earnings_quality_weight_scale_factor: 0.5
+  x1_soft_penalty_mode: x1_heavy_low_60d_penalty
+  x1_soft_penalty_share_threshold: 0.8
+  x1_soft_penalty_return_60d_threshold: 0.15
+  x1_soft_penalty_amount: 0.1
 
 scoring:
   formula: note_best_fit

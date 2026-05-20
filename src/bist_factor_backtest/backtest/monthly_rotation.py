@@ -14,7 +14,10 @@ from bist_factor_backtest.data.calendar import (
     get_last_trading_day,
     get_market_open_datetime,
 )
-from bist_factor_backtest.data.point_in_time import get_latest_known_annual_financials, get_latest_known_financials
+from bist_factor_backtest.data.point_in_time import (
+    get_latest_known_annual_financials_with_stale_replacement,
+    get_latest_known_financials,
+)
 from bist_factor_backtest.data.universe import get_universe_for_date
 from bist_factor_backtest.factors.filters import FilterSettings, apply_filters
 from bist_factor_backtest.factors.firm_value import attach_market_cap_firm_value
@@ -83,7 +86,11 @@ def run_monthly_rotation_backtest(
             "note_best_fit_x1_quality_tilt",
             "note_best_fit_x2_quality_tilt",
         }:
-            known = get_latest_known_annual_financials(financial_snapshots, rebalance_datetime, buy_date)
+            known = get_latest_known_annual_financials_with_stale_replacement(
+                financial_snapshots,
+                rebalance_datetime,
+                buy_date,
+            )
             if config.scoring.formula in {
                 "note_best_fit",
                 "note_best_fit_plus_earnings",
@@ -599,6 +606,8 @@ def _attach_note_best_fit_growth_inputs(
         how="left",
     )
     return enriched
+
+
 
 
 def _attach_universe_metadata(

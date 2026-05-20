@@ -702,6 +702,62 @@ def load_announcement_dates_mkk_esirket_fallback(
 
 
 @app.command()
+def load_announcement_dates_fallback_registry(
+    registry_file: Path = Path("data/universe/announcement_fallback_registry.csv"),
+    config: Path = Path("config.yaml"),
+    only_missing: bool = True,
+) -> None:
+    if not registry_file.exists():
+        typer.echo(f"announcement fallback registry not found: {registry_file}")
+        return
+
+    settings = load_config(config)
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    if statements.empty:
+        storage.close()
+        raise typer.BadParameter("financial_statements is empty; load statement data first")
+
+    registry = pd.read_csv(registry_file)
+    if registry.empty:
+        storage.close()
+        typer.echo("announcement fallback registry is empty")
+        return
+
+    if "is_active" in registry.columns:
+        registry = registry[registry["is_active"].fillna(False).astype(bool)].copy()
+    registry["symbol"] = registry["symbol"].astype(str).str.upper()
+    registry["period_end"] = pd.to_datetime(registry["period_end"], errors="coerce").dt.date
+    registry["announcement_date"] = pd.to_datetime(registry["announcement_date"], errors="coerce").dt.date
+    registry = registry[registry["symbol"].notna() & registry["period_end"].notna() & registry["announcement_date"].notna()].copy()
+    if registry.empty:
+        storage.close()
+        typer.echo("announcement fallback registry has no usable active rows")
+        return
+
+    updates = registry.rename(columns={"source_url": "announcement_source_url"}).copy()
+    updates["statement_id"] = None
+    updates["announcement_datetime"] = pd.NaT
+    updates = updates[["statement_id", "symbol", "period_end", "announcement_date", "announcement_datetime", "announcement_source_url"]]
+
+    before = statements.copy()
+    merged = merge_announcements_into_statements(statements, updates, overwrite_existing=False)
+    before_dates = pd.to_datetime(before.get("announcement_date"), errors="coerce")
+    after_dates = pd.to_datetime(merged.get("announcement_date"), errors="coerce")
+    changed_mask = after_dates.notna() & (before_dates.isna() | (before_dates != after_dates))
+    if only_missing:
+        changed_mask = changed_mask & before_dates.isna()
+    changed = merged[changed_mask].copy()
+    if not changed.empty:
+        _upsert_statements(storage, changed)
+        typer.echo(changed[["symbol", "period_end", "announcement_date"]].to_string(index=False))
+    else:
+        typer.echo("announcement fallback registry produced no statement updates")
+    storage.close()
+
+
+@app.command()
 def audit_listing_gap_classification(
     config: Path = Path("config.yaml"),
     listing_dates_file: Path = Path("data/universe/bist_sanayi_listing_dates.csv"),
@@ -1092,6 +1148,7 @@ def refresh_dashboard(
             load_announcement_dates_investing_live(registry_file, config=base_profile.config_path, only_missing=True)
         load_announcement_dates_issuer_ir_fallback(config=base_profile.config_path, only_missing=True)
         load_announcement_dates_mkk_esirket_fallback(config=base_profile.config_path, only_missing=True)
+        load_announcement_dates_fallback_registry(config=base_profile.config_path, only_missing=True)
     build_snapshots(base_profile.config_path)
     build_dashboard(output_dir=output_dir)
 
