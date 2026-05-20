@@ -91,6 +91,10 @@ class StrategyConfig(_Model):
     earnings_quality_soft_penalty_amount: float = 0.0
     earnings_quality_weight_scale_mode: str | None = None
     earnings_quality_weight_scale_factor: float = 1.0
+    symbol_cooldown_weight_scale_mode: str | None = None
+    symbol_cooldown_lookback_months: int = 0
+    symbol_cooldown_negative_return_threshold: float = 0.0
+    symbol_cooldown_weight_scale_factor: float = 1.0
 
 
 class ScoringConfig(_Model):

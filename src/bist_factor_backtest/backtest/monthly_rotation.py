@@ -60,6 +60,7 @@ def run_monthly_rotation_backtest(
     portfolio_value = config.backtest.initial_capital
     previous_held_symbols: set[str] = set()
     selection_plan: list[dict] = []
+    realized_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
 
     for month_index, month in enumerate(months):
         buy_date = get_first_trading_day(calendar_prices, month)
@@ -192,6 +193,12 @@ def run_monthly_rotation_backtest(
             position_returns.append(position)
 
         positions_result = pd.DataFrame(position_returns)
+        positions_result = _apply_symbol_cooldown_weight_scaling_rule(
+            positions_result,
+            config,
+            plan["month"],
+            realized_symbol_history,
+        )
         if collect_diagnostics and not positions.empty:
             planned_snapshot = positions.copy()
             planned_snapshot["run_id"] = run_id
@@ -210,6 +217,11 @@ def run_monthly_rotation_backtest(
             gross_return = float((positions_result["weight"] * positions_result["gross_return"]).sum())
             net_return = float((positions_result["weight"] * positions_result["net_return"]).sum())
             selected_symbols = ",".join(positions_result["symbol"].tolist())
+            month_period = pd.Period(plan["month"], freq="M")
+            for row in positions_result[["symbol", "net_return"]].itertuples(index=False):
+                symbol = str(row.symbol)
+                history = realized_symbol_history.setdefault(symbol, [])
+                history.append((month_period, float(row.net_return)))
             if collect_positions:
                 positions_result["run_id"] = run_id
                 positions_result["month"] = plan["month"]
@@ -478,6 +490,45 @@ def _apply_earnings_quality_weight_scaling_rule(
     else:
         scale_mask = growth_mask & accel_mask
 
+    if not scale_mask.any():
+        return result
+
+    result.loc[scale_mask, "weight"] = pd.to_numeric(result.loc[scale_mask, "weight"], errors="coerce") * scale_factor
+    total_weight = pd.to_numeric(result["weight"], errors="coerce").sum()
+    if total_weight > 0:
+        result["weight"] = pd.to_numeric(result["weight"], errors="coerce") / total_weight
+    return result
+
+
+def _apply_symbol_cooldown_weight_scaling_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+    month: str,
+    realized_symbol_history: dict[str, list[tuple[pd.Period, float]]],
+) -> pd.DataFrame:
+    mode = config.strategy.symbol_cooldown_weight_scale_mode
+    if positions.empty or not mode:
+        return positions
+    if mode != "prior_negative_same_symbol_scale":
+        return positions
+
+    lookback_months = config.strategy.symbol_cooldown_lookback_months
+    negative_threshold = config.strategy.symbol_cooldown_negative_return_threshold
+    scale_factor = config.strategy.symbol_cooldown_weight_scale_factor
+    if lookback_months <= 0 or scale_factor <= 0 or scale_factor >= 1:
+        return positions
+
+    current_period = pd.Period(month, freq="M")
+    result = positions.copy()
+    scale_mask = []
+    for symbol in result["symbol"].astype(str):
+        history = realized_symbol_history.get(symbol, [])
+        has_recent_negative = any(
+            0 < (current_period - prior_period).n <= lookback_months and prior_return < negative_threshold
+            for prior_period, prior_return in history
+        )
+        scale_mask.append(has_recent_negative)
+    scale_mask = pd.Series(scale_mask, index=result.index)
     if not scale_mask.any():
         return result
 
