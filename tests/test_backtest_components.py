@@ -5,6 +5,8 @@ import pytest
 
 from bist_factor_backtest.backtest.execution import calculate_position_return_open_to_open
 from bist_factor_backtest.backtest.monthly_rotation import (
+    _apply_dynamic_repeater_weight_scaling_rule,
+    _apply_qqq_regime_weight_scaling_rule,
     _apply_technical_confirmation_rule,
     _apply_x1_soft_penalty_rule,
 )
@@ -132,6 +134,76 @@ class TestRecentReturn60d:
         assert result["recent_return_60d"].iloc[0] == pytest.approx((169 / 109) - 1)
 
 
+class TestQqqRegimeWeightScalingRule:
+    def test_applyQqqRegimeWeightScalingRule_scalesWeightsWhenQqqBelow200d(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:", "price_symbol_suffix": None},
+                "universe": {"name": "US_LARGE_CAP_TECH", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 2,
+                    "qqq_regime_weight_scale_mode": "below_200dma_scale",
+                    "qqq_regime_scale_factor": 0.75,
+                    "qqq_regime_sma_lookback_days": 3,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        positions = pd.DataFrame([{"symbol": "AAA", "weight": 0.5}, {"symbol": "BBB", "weight": 0.5}])
+        prices = pd.DataFrame(
+            [
+                {"symbol": "QQQ", "date": "2024-01-01", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-02", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-03", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-04", "adjusted_close": 90.0, "close": 90.0},
+            ]
+        )
+
+        result = _apply_qqq_regime_weight_scaling_rule(positions, config, date(2024, 1, 5), prices)
+
+        assert result["weight"].tolist() == pytest.approx([0.375, 0.375])
+
+    def test_applyQqqRegimeWeightScalingRule_requiresNegative60dForDoubleRiskOff(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:", "price_symbol_suffix": None},
+                "universe": {"name": "US_LARGE_CAP_TECH", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 2,
+                    "qqq_regime_weight_scale_mode": "below_200dma_and_negative_60d_scale",
+                    "qqq_regime_scale_factor": 0.75,
+                    "qqq_regime_sma_lookback_days": 3,
+                    "qqq_regime_return_lookback_days": 2,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        positions = pd.DataFrame([{"symbol": "AAA", "weight": 0.5}, {"symbol": "BBB", "weight": 0.5}])
+        prices = pd.DataFrame(
+            [
+                {"symbol": "QQQ", "date": "2024-01-01", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-02", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-03", "adjusted_close": 100.0, "close": 100.0},
+                {"symbol": "QQQ", "date": "2024-01-04", "adjusted_close": 90.0, "close": 90.0},
+                {"symbol": "QQQ", "date": "2024-01-05", "adjusted_close": 95.0, "close": 95.0},
+            ]
+        )
+
+        result = _apply_qqq_regime_weight_scaling_rule(positions, config, date(2024, 1, 6), prices)
+
+        assert result["weight"].tolist() == pytest.approx([0.5, 0.5])
+
+
 class TestTechnicalConfirmationRule:
     def test_applyTechnicalConfirmationRule_vetoesNegative60dHighScoreAndRedistributes(self):
         config = BacktestConfig.model_validate(
@@ -250,3 +322,79 @@ class TestX1SoftPenaltyRule:
         assert result["symbol"].tolist() == ["BBB", "CCC"]
         assert result["weight"].sum() == pytest.approx(1.0)
         assert result["weight"].tolist() == pytest.approx([0.5, 0.5])
+
+
+class TestDynamicRepeaterWeightScalingRule:
+    def test_applyDynamicRepeaterWeightScalingRule_scalesWhenTwoFlaggedSymbolsPresent(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {"name": "US_INDUSTRIALS", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "dynamic_repeater_weight_scale_mode": "recent_negative_repeaters_scale",
+                    "dynamic_repeater_lookback_months": 12,
+                    "dynamic_repeater_min_negative_hits": 2,
+                    "dynamic_repeater_weight_scale_factor": 0.75,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AAA", "weight": 0.4},
+                {"symbol": "BBB", "weight": 0.3},
+                {"symbol": "CCC", "weight": 0.3},
+            ]
+        )
+        history = {
+            "AAA": [(pd.Period("2024-01", freq="M"), -0.10), (pd.Period("2024-03", freq="M"), -0.05)],
+            "BBB": [(pd.Period("2024-02", freq="M"), -0.04), (pd.Period("2024-04", freq="M"), -0.02)],
+            "CCC": [(pd.Period("2024-04", freq="M"), 0.03)],
+        }
+
+        result = _apply_dynamic_repeater_weight_scaling_rule(positions, config, "2024-05", history)
+
+        assert result["weight"].sum() == pytest.approx(1.0)
+        assert result.loc[result["symbol"] == "AAA", "weight"].iloc[0] < 0.4
+        assert result.loc[result["symbol"] == "BBB", "weight"].iloc[0] < 0.3
+        assert result.loc[result["symbol"] == "CCC", "weight"].iloc[0] > 0.3
+
+    def test_applyDynamicRepeaterWeightScalingRule_ignoresSingleFlaggedSymbol(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {"name": "US_INDUSTRIALS", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "dynamic_repeater_weight_scale_mode": "recent_negative_repeaters_scale",
+                    "dynamic_repeater_lookback_months": 12,
+                    "dynamic_repeater_min_negative_hits": 2,
+                    "dynamic_repeater_weight_scale_factor": 0.75,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AAA", "weight": 0.4},
+                {"symbol": "BBB", "weight": 0.3},
+                {"symbol": "CCC", "weight": 0.3},
+            ]
+        )
+        history = {
+            "AAA": [(pd.Period("2024-01", freq="M"), -0.10), (pd.Period("2024-03", freq="M"), -0.05)],
+            "BBB": [(pd.Period("2024-02", freq="M"), 0.04), (pd.Period("2024-04", freq="M"), -0.02)],
+        }
+
+        result = _apply_dynamic_repeater_weight_scaling_rule(positions, config, "2024-05", history)
+
+        assert result["weight"].tolist() == pytest.approx([0.4, 0.3, 0.3])

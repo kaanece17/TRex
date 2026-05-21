@@ -650,3 +650,91 @@ class TestRunMonthlyRotationBacktest:
 
         assert len(result["selected_positions"]) == 1
         assert result["monthly_results"]["selected_symbols"].iloc[0] in {"AAA", "BBB"}
+
+    def test_runMonthlyRotationBacktest_bimonthly_reducesRebalanceMonths(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "Europe/Istanbul"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {
+                    "name": "US_INDUSTRIALS",
+                    "source": "csv",
+                    "symbols_file": "symbols.csv",
+                    "membership_file": "membership.csv",
+                    "mode": "historical",
+                },
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 1,
+                    "rebalance_frequency": "bimonthly",
+                    "rebalance_day": "first_trading_day",
+                    "rebalance_time": "market_open",
+                    "market_open_time": "09:30",
+                    "buy_rule": "first_trading_day_open",
+                    "sell_rule": "last_trading_day_open",
+                    "execution_mode": "ideal_open",
+                    "weighting": "equal_weight",
+                    "if_less_than_top_n": "use_available",
+                },
+                "scoring": {"formula": "x1_plus_x2", "use_ttm": True, "firm_value_mode": "market_cap"},
+                "costs": {"commission_rate": 0.0},
+                "filters": {
+                    "require_positive_equity": True,
+                    "require_positive_net_income_ttm": True,
+                    "require_positive_previous_net_income_ttm": True,
+                    "require_positive_operating_profit_ttm": True,
+                    "require_positive_firm_value": True,
+                    "require_shares_outstanding": True,
+                    "min_avg_turnover_20d": 1,
+                },
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-05-31", "initial_capital": 100000},
+            }
+        )
+        prices = pd.DataFrame(
+            [
+                {"symbol": "AAA", "date": "2024-01-02", "open": 10, "high": 10, "low": 10, "close": 10, "adjusted_close": 10, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-01-31", "open": 11, "high": 11, "low": 11, "close": 11, "adjusted_close": 11, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-02-01", "open": 11, "high": 11, "low": 11, "close": 11, "adjusted_close": 11, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-02-29", "open": 12, "high": 12, "low": 12, "close": 12, "adjusted_close": 12, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-03-01", "open": 12, "high": 12, "low": 12, "close": 12, "adjusted_close": 12, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-03-29", "open": 13, "high": 13, "low": 13, "close": 13, "adjusted_close": 13, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-04-01", "open": 13, "high": 13, "low": 13, "close": 13, "adjusted_close": 13, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-04-30", "open": 14, "high": 14, "low": 14, "close": 14, "adjusted_close": 14, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-05-02", "open": 14, "high": 14, "low": 14, "close": 14, "adjusted_close": 14, "volume": 1000},
+                {"symbol": "AAA", "date": "2024-05-31", "open": 15, "high": 15, "low": 15, "close": 15, "adjusted_close": 15, "volume": 1000},
+            ]
+        )
+        financials = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "period_end": "2023-12-31",
+                    "fiscal_year": 2023,
+                    "fiscal_period": "Q4",
+                    "fiscal_quarter": 4,
+                    "announcement_datetime": "2024-01-01 08:00",
+                    "announcement_date": "2024-01-01",
+                    "net_income": 100,
+                    "equity": 1000,
+                    "operating_profit": 50,
+                    "cash": 0,
+                    "total_debt": 0,
+                    "shares_outstanding": 100,
+                    "shares_announcement_datetime": "2024-01-01 08:00",
+                    "shares_source_url": "sec",
+                    "net_income_ttm": 100,
+                    "operating_profit_ttm": 50,
+                    "previous_net_income_ttm": 50,
+                    "source_statement_id": "s1",
+                    "source_url": "sec",
+                    "raw_hash": "hash1",
+                },
+            ]
+        )
+        membership = pd.DataFrame(
+            [{"symbol": "AAA", "universe_name": "US_INDUSTRIALS", "start_date": pd.Timestamp("2020-01-01").date(), "end_date": pd.NaT}]
+        )
+
+        result = run_monthly_rotation_backtest(config, prices, financials, membership)
+
+        assert result["monthly_results"]["month"].tolist() == ["2024-01", "2024-03", "2024-05"]

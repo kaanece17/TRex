@@ -1097,7 +1097,31 @@ def build_dashboard(
             storage = DuckDbStorage(settings.data.duckdb_path)
             storage.initialize()
             prices = storage.read_table("market_prices")
+            if settings.strategy.qqq_regime_weight_scale_mode:
+                qqq_prices = YFinancePriceLoader().load(
+                    ["QQQ"],
+                    settings.data.price_preload_start or settings.backtest.start_date,
+                    settings.backtest.end_date,
+                    yahoo_suffix=settings.data.price_symbol_suffix,
+                )
+                if not qqq_prices.empty:
+                    qqq_prices["date"] = pd.to_datetime(qqq_prices["date"]).dt.date
+                    prices = pd.concat([prices, qqq_prices], ignore_index=True)
+                    prices["date"] = pd.to_datetime(prices["date"]).dt.date
+                    prices = (
+                        prices.sort_values(["symbol", "date"])
+                        .drop_duplicates(["symbol", "date"], keep="last")
+                        .reset_index(drop=True)
+                    )
             financials = storage.read_table("financial_snapshots")
+            if "announcement_datetime" in financials.columns:
+                financials["announcement_datetime"] = pd.to_datetime(financials["announcement_datetime"], errors="coerce")
+                financials = (
+                    financials.sort_values(["symbol", "period_end", "announcement_datetime"])
+                    .drop_duplicates(["symbol", "period_end", "announcement_datetime"], keep="last")
+                    .reset_index(drop=True)
+                )
+            financials = add_earnings_momentum_features(financials)
             membership = _load_membership_for_run(settings)
             result = run_monthly_rotation_backtest(settings, prices, financials, membership)
             _append_backtest_run(storage, settings, result, profile.config_path)

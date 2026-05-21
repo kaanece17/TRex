@@ -37,6 +37,8 @@ def run_monthly_rotation_backtest(
     prepared_prices["date"] = pd.to_datetime(prepared_prices["date"]).dt.date
     feature_prices = prepared_prices
     known_symbols = set(financial_snapshots["symbol"].dropna().astype(str).unique())
+    if config.strategy.qqq_regime_weight_scale_mode:
+        known_symbols.add("QQQ")
     if known_symbols:
         feature_prices = prepared_prices[prepared_prices["symbol"].isin(known_symbols)].copy()
     feature_months = get_backtest_months(feature_prices, config.backtest.start_date, config.backtest.end_date)
@@ -46,6 +48,7 @@ def run_monthly_rotation_backtest(
     else:
         calendar_prices = prepared_prices
         months = get_backtest_months(calendar_prices, config.backtest.start_date, config.backtest.end_date)
+    months = _apply_rebalance_frequency(months, config.strategy.rebalance_frequency)
     monthly_results = []
     selected_positions = []
     planned_positions = []
@@ -54,6 +57,7 @@ def run_monthly_rotation_backtest(
     portfolio_value = config.backtest.initial_capital
     previous_held_symbols: set[str] = set()
     selection_plan: list[dict] = []
+    realized_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
 
     for month_index, month in enumerate(months):
         buy_date = get_first_trading_day(calendar_prices, month)
@@ -126,6 +130,12 @@ def run_monthly_rotation_backtest(
 
     for plan_index, plan in enumerate(selection_plan):
         positions = plan["positions"]
+        positions = _apply_qqq_regime_weight_scaling_rule(
+            positions,
+            config,
+            plan["buy_date"],
+            calendar_prices,
+        )
         prev_symbols = (
             set(selection_plan[plan_index - 1]["positions"]["symbol"].astype(str).tolist())
             if plan_index > 0 and not selection_plan[plan_index - 1]["positions"].empty
@@ -158,6 +168,12 @@ def run_monthly_rotation_backtest(
             position_returns.append(position)
 
         positions_result = pd.DataFrame(position_returns)
+        positions_result = _apply_dynamic_repeater_weight_scaling_rule(
+            positions_result,
+            config,
+            plan["month"],
+            realized_symbol_history,
+        )
         if not positions.empty:
             planned_snapshot = positions.copy()
             planned_snapshot["run_id"] = run_id
@@ -176,6 +192,10 @@ def run_monthly_rotation_backtest(
             gross_return = float((positions_result["weight"] * positions_result["gross_return"]).sum())
             net_return = float((positions_result["weight"] * positions_result["net_return"]).sum())
             selected_symbols = ",".join(positions_result["symbol"].tolist())
+            month_period = pd.Period(plan["month"], freq="M")
+            for row in positions_result[["symbol", "net_return"]].itertuples(index=False):
+                history = realized_symbol_history.setdefault(str(row.symbol), [])
+                history.append((month_period, float(row.net_return)))
             positions_result["run_id"] = run_id
             positions_result["month"] = plan["month"]
             positions_result["used_period_end"] = positions_result["period_end"]
@@ -208,6 +228,22 @@ def run_monthly_rotation_backtest(
         "rejected_candidates": pd.concat(rejected_candidates, ignore_index=True) if rejected_candidates else pd.DataFrame(),
         "candidate_diagnostics": pd.concat(candidate_diagnostics, ignore_index=True) if candidate_diagnostics else pd.DataFrame(),
     }
+
+
+def _apply_rebalance_frequency(months: list[str], rebalance_frequency: str) -> list[str]:
+    if not months:
+        return months
+
+    normalized = str(rebalance_frequency or "monthly").strip().lower()
+    if normalized == "monthly":
+        step = 1
+    elif normalized in {"bimonthly", "every_2_months", "two_months"}:
+        step = 2
+    elif normalized in {"quarterly", "every_3_months", "three_months"}:
+        step = 3
+    else:
+        step = 1
+    return months[::step]
 
 
 def _resolve_sell_date(
@@ -354,6 +390,100 @@ def _apply_x1_soft_penalty_rule(
     return result
 
 
+def _apply_dynamic_repeater_weight_scaling_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+    month: str,
+    realized_symbol_history: dict[str, list[tuple[pd.Period, float]]],
+) -> pd.DataFrame:
+    mode = config.strategy.dynamic_repeater_weight_scale_mode
+    if positions.empty or not mode:
+        return positions
+    if mode != "recent_negative_repeaters_scale":
+        return positions
+
+    lookback_months = config.strategy.dynamic_repeater_lookback_months
+    min_negative_hits = config.strategy.dynamic_repeater_min_negative_hits
+    scale_factor = config.strategy.dynamic_repeater_weight_scale_factor
+    if lookback_months <= 0 or min_negative_hits <= 0 or scale_factor <= 0 or scale_factor >= 1:
+        return positions
+
+    current_period = pd.Period(month, freq="M")
+    result = positions.copy()
+    flagged_symbols: set[str] = set()
+    for symbol in result["symbol"].astype(str):
+        history = realized_symbol_history.get(symbol, [])
+        recent = [
+            prior_return
+            for prior_period, prior_return in history
+            if 0 < (current_period - prior_period).n <= lookback_months
+        ]
+        if not recent:
+            continue
+        negative_hits = sum(1 for prior_return in recent if prior_return < 0)
+        avg_recent = sum(recent) / len(recent)
+        if negative_hits >= min_negative_hits and avg_recent < 0:
+            flagged_symbols.add(symbol)
+
+    if len(flagged_symbols) < 2:
+        return result
+
+    scale_mask = result["symbol"].astype(str).isin(flagged_symbols)
+    if not scale_mask.any():
+        return result
+
+    result.loc[scale_mask, "weight"] = pd.to_numeric(result.loc[scale_mask, "weight"], errors="coerce") * scale_factor
+    total_weight = pd.to_numeric(result["weight"], errors="coerce").sum()
+    if total_weight > 0:
+        result["weight"] = pd.to_numeric(result["weight"], errors="coerce") / total_weight
+    return result
+
+
+def _apply_qqq_regime_weight_scaling_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+    buy_date,
+    prices: pd.DataFrame,
+) -> pd.DataFrame:
+    mode = config.strategy.qqq_regime_weight_scale_mode
+    if positions.empty or not mode:
+        return positions
+    if mode not in {"below_200dma_scale", "below_200dma_and_negative_60d_scale"}:
+        return positions
+
+    scale_factor = config.strategy.qqq_regime_scale_factor
+    if scale_factor <= 0 or scale_factor >= 1:
+        return positions
+
+    qqq = prices[prices["symbol"].astype(str) == "QQQ"].copy()
+    if qqq.empty:
+        return positions
+    qqq["date"] = pd.to_datetime(qqq["date"]).dt.date
+    qqq = qqq[qqq["date"] < buy_date].sort_values("date").copy()
+    if qqq.empty:
+        return positions
+
+    lookback_days = config.strategy.qqq_regime_sma_lookback_days
+    close_col = "adjusted_close" if "adjusted_close" in qqq.columns else "close"
+    qqq["sma"] = qqq[close_col].rolling(lookback_days, min_periods=lookback_days).mean()
+
+    latest = qqq.iloc[-1]
+    below_200dma = bool(pd.notna(latest["sma"]) and latest[close_col] < latest["sma"])
+    if not below_200dma:
+        return positions
+
+    if mode == "below_200dma_and_negative_60d_scale":
+        return_lookback_days = config.strategy.qqq_regime_return_lookback_days
+        qqq["ret"] = qqq[close_col] / qqq[close_col].shift(return_lookback_days) - 1
+        latest = qqq.iloc[-1]
+        if not (pd.notna(latest["ret"]) and latest["ret"] < 0):
+            return positions
+
+    result = positions.copy()
+    result["weight"] = pd.to_numeric(result["weight"], errors="coerce") * scale_factor
+    return result
+
+
 def _calculate_universe_breadth_above_sma(
     prices: pd.DataFrame,
     symbols: list[str],
@@ -365,6 +495,14 @@ def _calculate_universe_breadth_above_sma(
     universe_prices = prices[prices["symbol"].isin(symbols)].copy()
     if universe_prices.empty:
         return None
+    universe_prices["date"] = pd.to_datetime(universe_prices["date"], errors="coerce").dt.date
+    universe_prices = universe_prices[universe_prices["date"].notna()].copy()
+    if universe_prices.empty:
+        return None
+    as_of_date = pd.to_datetime(as_of_date, errors="coerce")
+    if pd.isna(as_of_date):
+        return None
+    as_of_date = as_of_date.date()
     universe_prices = universe_prices[universe_prices["date"] < as_of_date].copy()
     if universe_prices.empty:
         return None

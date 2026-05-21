@@ -87,6 +87,14 @@ class StrategyConfig(_Model):
     x1_soft_penalty_share_threshold: float | None = None
     x1_soft_penalty_return_60d_threshold: float | None = None
     x1_soft_penalty_amount: float = 0.0
+    dynamic_repeater_weight_scale_mode: str | None = None
+    dynamic_repeater_lookback_months: int = 0
+    dynamic_repeater_min_negative_hits: int = 0
+    dynamic_repeater_weight_scale_factor: float = 1.0
+    qqq_regime_weight_scale_mode: str | None = None
+    qqq_regime_scale_factor: float = 1.0
+    qqq_regime_sma_lookback_days: int = 200
+    qqq_regime_return_lookback_days: int = 60
 
 
 class ScoringConfig(_Model):

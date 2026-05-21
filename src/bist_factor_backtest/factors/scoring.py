@@ -45,7 +45,27 @@ def calculate_scores(data: pd.DataFrame, scoring: ScoringConfig | None = None) -
     base_score = (result["x1"] * x1_weight) + (result["x2"] * x2_weight)
     if formula == "quality_plus_earnings":
         earnings_weight = scoring.earnings_weight if scoring is not None else 1.0
-        earnings_signal = _build_earnings_signal(result, scoring)
+        earnings_signal = _build_earnings_signal(
+            result,
+            scoring,
+            feature_names=[
+                "ni_ttm_growth_yoy",
+                "op_ttm_growth_yoy",
+                "earnings_acceleration",
+                "profitability_quality_combo",
+            ],
+        )
+        result["earnings_signal"] = earnings_signal
+        result["score"] = base_score + (earnings_signal * earnings_weight)
+    elif formula == "quality_plus_op_growth":
+        earnings_weight = scoring.earnings_weight if scoring is not None else 1.0
+        earnings_signal = _build_earnings_signal(
+            result,
+            scoring,
+            feature_names=[
+                "op_ttm_growth_yoy",
+            ],
+        )
         result["earnings_signal"] = earnings_signal
         result["score"] = base_score + (earnings_signal * earnings_weight)
     else:
@@ -71,7 +91,11 @@ def _normalize_growth_series(series: pd.Series, scoring: ScoringConfig | None) -
     raise ValueError(f"Unsupported growth mode: {growth_mode}")
 
 
-def _build_earnings_signal(result: pd.DataFrame, scoring: ScoringConfig | None) -> pd.Series:
+def _build_earnings_signal(
+    result: pd.DataFrame,
+    scoring: ScoringConfig | None,
+    feature_names: list[str] | None = None,
+) -> pd.Series:
     def _series(name: str) -> pd.Series:
         if name not in result.columns:
             return pd.Series(pd.NA, index=result.index, dtype="float64")
@@ -83,8 +107,10 @@ def _build_earnings_signal(result: pd.DataFrame, scoring: ScoringConfig | None) 
         "earnings_acceleration": _normalize_growth_series(_series("earnings_acceleration"), scoring),
         "profitability_quality_combo": _series("profitability_quality_combo"),
     }
+    selected_names = feature_names or list(feature_map.keys())
     ranked_features: list[pd.Series] = []
-    for name, series in feature_map.items():
+    for name in selected_names:
+        series = feature_map[name]
         working = pd.to_numeric(series, errors="coerce")
         if name != "profitability_quality_combo":
             working = working.clip(lower=MIN_GROWTH, upper=MAX_GROWTH)

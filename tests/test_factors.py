@@ -303,6 +303,42 @@ class TestCalculateScores:
         assert result["score"].iloc[0] > result["score"].iloc[1]
         assert result["earnings_signal"].iloc[0] > result["earnings_signal"].iloc[1]
 
+    def test_calculateScores_qualityPlusOpGrowth_prefersStrongerOperatingProfitGrowth(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "ni_ttm_growth_yoy": 0.0,
+                    "op_ttm_growth_yoy": 1.2,
+                    "earnings_acceleration": -0.5,
+                    "profitability_quality_combo": 0.8,
+                },
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "ni_ttm_growth_yoy": 2.0,
+                    "op_ttm_growth_yoy": 0.0,
+                    "earnings_acceleration": 1.5,
+                    "profitability_quality_combo": 2.0,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(formula="quality_plus_op_growth", earnings_weight=1.0),
+        )
+
+        assert result["score"].iloc[0] > result["score"].iloc[1]
+        assert result["earnings_signal"].iloc[0] > result["earnings_signal"].iloc[1]
+
 
 class TestApplyFilters:
     def test_applyFilters_x1DominantLowGrowth_rejectsOnlyMatchingRows(self):

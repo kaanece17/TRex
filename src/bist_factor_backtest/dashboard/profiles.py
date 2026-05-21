@@ -61,4 +61,25 @@ def active_dashboard_profiles() -> list[DashboardProfile]:
             market_id="us",
             market_label="US",
         ),
+        DashboardProfile(
+            id="us_industrials_quality_op_growth",
+            label="US Industrials Quality + OP Growth",
+            config_path=root / "config.us_industrials_quality_op_growth.yaml",
+            market_id="us",
+            market_label="US",
+        ),
+        DashboardProfile(
+            id="us_large_cap_tech_quality_earnings",
+            label="US Large-Cap Tech Quality + Earnings",
+            config_path=root / "config.us_large_cap_tech_quality_earnings.yaml",
+            market_id="us",
+            market_label="US",
+        ),
+        DashboardProfile(
+            id="us_large_cap_tech_quality_earnings_regime",
+            label="US Large-Cap Tech Q+E + QQQ Risk-Off Cash",
+            config_path=root / "config.us_large_cap_tech_quality_earnings_regime.yaml",
+            market_id="us",
+            market_label="US",
+        ),
     ]
