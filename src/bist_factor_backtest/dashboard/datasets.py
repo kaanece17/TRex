@@ -11,6 +11,7 @@ import pandas as pd
 
 from bist_factor_backtest.backtest.monthly_rotation import (
     _apply_hold_buffer_rule,
+    _apply_position_quality_guard_rule,
     _apply_technical_confirmation_rule,
     _apply_x1_soft_penalty_rule,
     _attach_note_best_fit_growth_inputs,
@@ -346,6 +347,7 @@ def build_next_month_preview(
         score_weight_cap=config.strategy.score_weight_cap,
     )
     positions = _apply_technical_confirmation_rule(positions, config)
+    positions = _apply_position_quality_guard_rule(positions, config)
 
     preview_regime = _build_preview_regime(config, normalized_prices, membership, preview_month, preview_reference_date)
     if positions.empty:

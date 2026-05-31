@@ -95,6 +95,14 @@ class StrategyConfig(_Model):
     qqq_regime_scale_factor: float = 1.0
     qqq_regime_sma_lookback_days: int = 200
     qqq_regime_return_lookback_days: int = 60
+    marketbox_risk_on_filter_mode: str | None = None
+    marketbox_risk_on_symbol: str = "XLK"
+    marketbox_risk_on_min_score: float = 0.50
+    marketbox_risk_on_stage_confidence: float = 1.0
+    position_quality_guard_mode: str | None = None
+    position_quality_guard_symbols: list[str] = []
+    position_quality_guard_return_60d_threshold: float = 0.0
+    position_quality_guard_redistribute: bool = False
 
 
 class ScoringConfig(_Model):
@@ -111,6 +119,21 @@ class ScoringConfig(_Model):
     x1_dominant_value_penalty_share_threshold: float | None = None
     x1_cap_quantile: float | None = None
     x2_cap_quantile: float | None = None
+    filing_timeliness_weight: float = 0.0
+    announcement_freshness_weight: float = 0.0
+    announcement_drift_weight: float = 0.0
+    announcement_drift_lookback_days: int = 20
+    revenue_growth_weight: float = 0.0
+    revenue_acceleration_weight: float = 0.0
+    asset_growth_penalty: float = 0.0
+    asset_growth_threshold: float | None = None
+    accruals_penalty: float = 0.0
+    accruals_ratio_threshold: float | None = None
+    delay_penalty: float = 0.0
+    filing_lag_threshold_days: int | None = None
+    eps_surprise_weight: float = 0.0
+    analyst_revision_weight: float = 0.0
+    recommendation_weight: float = 0.0
 
 
 class CostsConfig(_Model):

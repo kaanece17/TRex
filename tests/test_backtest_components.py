@@ -6,6 +6,8 @@ import pytest
 from bist_factor_backtest.backtest.execution import calculate_position_return_open_to_open
 from bist_factor_backtest.backtest.monthly_rotation import (
     _apply_dynamic_repeater_weight_scaling_rule,
+    _apply_marketbox_risk_on_filter_rule,
+    _apply_position_quality_guard_rule,
     _apply_qqq_regime_weight_scaling_rule,
     _apply_technical_confirmation_rule,
     _apply_x1_soft_penalty_rule,
@@ -398,3 +400,149 @@ class TestDynamicRepeaterWeightScalingRule:
         result = _apply_dynamic_repeater_weight_scaling_rule(positions, config, "2024-05", history)
 
         assert result["weight"].tolist() == pytest.approx([0.4, 0.3, 0.3])
+
+
+class TestPositionQualityGuardRule:
+    def _config(self, *, redistribute: bool = False, return_60d_threshold: float = 0.0) -> BacktestConfig:
+        return BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:", "price_symbol_suffix": None},
+                "universe": {"name": "US_LARGE_CAP_TECH", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 3,
+                    "position_quality_guard_mode": "symbol_group_negative_60d_cash_veto",
+                    "position_quality_guard_symbols": ["AMD", "NVDA"],
+                    "position_quality_guard_return_60d_threshold": return_60d_threshold,
+                    "position_quality_guard_redistribute": redistribute,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+
+    def test_applyPositionQualityGuardRule_vetoesNegative60dGuardSymbolAndLeavesCash(self):
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AMD", "weight": 0.4, "recent_return_60d": -0.01},
+                {"symbol": "MSFT", "weight": 0.3, "recent_return_60d": -0.20},
+                {"symbol": "NVDA", "weight": 0.3, "recent_return_60d": 0.05},
+            ]
+        )
+
+        result = _apply_position_quality_guard_rule(positions, self._config())
+
+        assert result["symbol"].tolist() == ["MSFT", "NVDA"]
+        assert result["weight"].sum() == pytest.approx(0.6)
+
+    def test_applyPositionQualityGuardRule_canRedistributeSurvivorWeights(self):
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AMD", "weight": 0.4, "recent_return_60d": -0.01},
+                {"symbol": "MSFT", "weight": 0.3, "recent_return_60d": -0.20},
+                {"symbol": "NVDA", "weight": 0.3, "recent_return_60d": 0.05},
+            ]
+        )
+
+        result = _apply_position_quality_guard_rule(positions, self._config(redistribute=True))
+
+        assert result["symbol"].tolist() == ["MSFT", "NVDA"]
+        assert result["weight"].sum() == pytest.approx(1.0)
+        assert result["weight"].tolist() == pytest.approx([0.5, 0.5])
+
+    def test_applyPositionQualityGuardRule_respectsConfiguredNegativeThreshold(self):
+        positions = pd.DataFrame(
+            [
+                {"symbol": "AMD", "weight": 0.4, "recent_return_60d": -0.05},
+                {"symbol": "NVDA", "weight": 0.3, "recent_return_60d": -0.11},
+                {"symbol": "MSFT", "weight": 0.3, "recent_return_60d": -0.30},
+            ]
+        )
+
+        result = _apply_position_quality_guard_rule(
+            positions,
+            self._config(return_60d_threshold=-0.10),
+        )
+
+        assert result["symbol"].tolist() == ["AMD", "MSFT"]
+        assert result["weight"].sum() == pytest.approx(0.7)
+
+
+class TestMarketboxRiskOnFilterRule:
+    def _config(self, min_score: float = 0.50) -> BacktestConfig:
+        return BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "America/New_York"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:", "price_symbol_suffix": None},
+                "universe": {"name": "US_LARGE_CAP_TECH", "source": "csv", "symbols_file": "symbols.csv"},
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 2,
+                    "marketbox_risk_on_filter_mode": "xlk_risk_on_score",
+                    "marketbox_risk_on_symbol": "XLK",
+                    "marketbox_risk_on_min_score": min_score,
+                    "marketbox_risk_on_stage_confidence": 1.0,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+
+    def _prices(self, *, xlk_growth: float, same_day_spike: bool = False) -> pd.DataFrame:
+        rows = []
+        dates = pd.bdate_range("2023-01-02", periods=230)
+        for i, dt in enumerate(dates):
+            day = dt.date().isoformat()
+            xlk_close = 100.0 * ((1.0 + xlk_growth) ** i)
+            if same_day_spike and day == "2023-11-20":
+                xlk_close = 250.0
+            for symbol, close in [
+                ("XLK", xlk_close),
+                ("SPY", 100.0),
+                ("BTC-USD", 100.0),
+                ("GC=F", 100.0),
+            ]:
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "date": day,
+                        "open": close,
+                        "high": close,
+                        "low": close,
+                        "close": close,
+                        "adjusted_close": close,
+                        "volume": 1000.0,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_applyMarketboxRiskOnFilterRule_keepsPositionsWhenPriorXlkScoreIsRiskOn(self):
+        positions = pd.DataFrame([{"symbol": "AAPL", "weight": 1.0}])
+        prices = self._prices(xlk_growth=0.002)
+
+        result = _apply_marketbox_risk_on_filter_rule(
+            positions,
+            self._config(min_score=0.50),
+            date(2023, 11, 20),
+            prices,
+        )
+
+        assert not result.empty
+
+    def test_applyMarketboxRiskOnFilterRule_usesOnlyPitDataBeforeBuyDate(self):
+        positions = pd.DataFrame([{"symbol": "AAPL", "weight": 1.0}])
+        prices = self._prices(xlk_growth=0.0, same_day_spike=True)
+
+        result = _apply_marketbox_risk_on_filter_rule(
+            positions,
+            self._config(min_score=0.70),
+            date(2023, 11, 20),
+            prices,
+        )
+
+        assert result.empty

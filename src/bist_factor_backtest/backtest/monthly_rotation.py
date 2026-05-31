@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import numpy as np
 import pandas as pd
 
+from bist_factor_backtest.factors.analyst_signals import attach_latest_analyst_snapshot
 from bist_factor_backtest.backtest.execution import calculate_position_return_open_to_open
 from bist_factor_backtest.backtest.portfolio import build_positions
 from bist_factor_backtest.config import BacktestConfig
@@ -23,6 +25,10 @@ from bist_factor_backtest.factors.liquidity import (
     attach_recent_return_20d,
     attach_recent_return_60d,
 )
+from bist_factor_backtest.factors.pit_signals import (
+    attach_announcement_age_days,
+    attach_announcement_drift_return,
+)
 from bist_factor_backtest.factors.scoring import calculate_scores
 
 
@@ -31,6 +37,7 @@ def run_monthly_rotation_backtest(
     prices: pd.DataFrame,
     financial_snapshots: pd.DataFrame,
     universe_membership: pd.DataFrame,
+    analyst_snapshots: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame | str]:
     run_id = str(uuid4())
     prepared_prices = prices.copy()
@@ -39,6 +46,8 @@ def run_monthly_rotation_backtest(
     known_symbols = set(financial_snapshots["symbol"].dropna().astype(str).unique())
     if config.strategy.qqq_regime_weight_scale_mode:
         known_symbols.add("QQQ")
+    if config.strategy.marketbox_risk_on_filter_mode:
+        known_symbols.update({str(config.strategy.marketbox_risk_on_symbol or "XLK"), "SPY", "BTC-USD", "GC=F"})
     if known_symbols:
         feature_prices = prepared_prices[prepared_prices["symbol"].isin(known_symbols)].copy()
     feature_months = get_backtest_months(feature_prices, config.backtest.start_date, config.backtest.end_date)
@@ -89,6 +98,15 @@ def run_monthly_rotation_backtest(
             candidates = attach_avg_turnover_20d(candidates, feature_prices, buy_date)
             candidates = attach_recent_return_20d(candidates, feature_prices, buy_date)
             candidates = attach_recent_return_60d(candidates, feature_prices, buy_date)
+            candidates = attach_announcement_age_days(candidates, buy_date)
+            candidates = attach_announcement_drift_return(
+                candidates,
+                feature_prices,
+                buy_date,
+                lookback_days=config.scoring.announcement_drift_lookback_days,
+            )
+            if analyst_snapshots is not None and not analyst_snapshots.empty:
+                candidates = attach_latest_analyst_snapshot(candidates, analyst_snapshots, buy_date)
             candidates = attach_market_cap_firm_value(candidates, feature_prices, rebalance_datetime)
             candidates = calculate_scores(candidates, config.scoring)
             candidates = _apply_x1_soft_penalty_rule(candidates, config)
@@ -117,6 +135,13 @@ def run_monthly_rotation_backtest(
             score_weight_cap=config.strategy.score_weight_cap,
         )
         positions = _apply_technical_confirmation_rule(positions, config)
+        positions = _apply_position_quality_guard_rule(positions, config)
+        positions = _apply_marketbox_risk_on_filter_rule(
+            positions,
+            config,
+            buy_date,
+            calendar_prices,
+        )
         selection_plan.append(
             {
                 "month": month,
@@ -353,6 +378,43 @@ def _apply_technical_confirmation_rule(
     return survivors
 
 
+def _apply_position_quality_guard_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+) -> pd.DataFrame:
+    mode = config.strategy.position_quality_guard_mode
+    if positions.empty or not mode:
+        return positions
+    if mode != "symbol_group_negative_60d_cash_veto":
+        return positions
+    if "recent_return_60d" not in positions.columns:
+        return positions
+
+    guard_symbols = {str(symbol).upper() for symbol in config.strategy.position_quality_guard_symbols}
+    if not guard_symbols:
+        return positions
+
+    result = positions.copy()
+    return_60d = pd.to_numeric(result["recent_return_60d"], errors="coerce")
+    symbol = result["symbol"].astype(str).str.upper()
+    veto_mask = symbol.isin(guard_symbols) & return_60d.lt(
+        config.strategy.position_quality_guard_return_60d_threshold
+    )
+    if not veto_mask.any():
+        return result
+
+    survivors = result[~veto_mask].copy()
+    if survivors.empty:
+        return survivors
+
+    if config.strategy.position_quality_guard_redistribute:
+        total_weight = pd.to_numeric(survivors["weight"], errors="coerce").sum()
+        if total_weight > 0:
+            survivors["weight"] = pd.to_numeric(survivors["weight"], errors="coerce") / total_weight
+
+    return survivors
+
+
 def _apply_x1_soft_penalty_rule(
     candidates: pd.DataFrame,
     config: BacktestConfig,
@@ -482,6 +544,179 @@ def _apply_qqq_regime_weight_scaling_rule(
     result = positions.copy()
     result["weight"] = pd.to_numeric(result["weight"], errors="coerce") * scale_factor
     return result
+
+
+def _apply_marketbox_risk_on_filter_rule(
+    positions: pd.DataFrame,
+    config: BacktestConfig,
+    buy_date,
+    prices: pd.DataFrame,
+) -> pd.DataFrame:
+    mode = config.strategy.marketbox_risk_on_filter_mode
+    if positions.empty or not mode:
+        return positions
+    if str(mode) not in {"xlk_risk_on_only", "xlk_risk_on_score"}:
+        return positions
+
+    snapshot = _calculate_marketbox_risk_on_snapshot(
+        prices=prices,
+        buy_date=buy_date,
+        symbol=str(config.strategy.marketbox_risk_on_symbol or "XLK"),
+        min_score=float(config.strategy.marketbox_risk_on_min_score),
+        stage_conf=float(config.strategy.marketbox_risk_on_stage_confidence),
+    )
+    if bool(snapshot.get("risk_on")):
+        return positions
+    return positions.iloc[0:0].copy()
+
+
+def _calculate_marketbox_risk_on_snapshot(
+    *,
+    prices: pd.DataFrame,
+    buy_date,
+    symbol: str = "XLK",
+    min_score: float = 0.50,
+    stage_conf: float = 1.0,
+) -> dict[str, object]:
+    score = _calculate_marketbox_risk_on_score(prices, buy_date, symbol=symbol, stage_conf=stage_conf)
+    return {
+        "symbol": symbol,
+        "buy_date": buy_date,
+        "risk_on": bool(score is not None and score >= min_score),
+        "asset_score_risk_on": score,
+        "min_score": float(min_score),
+    }
+
+
+def _calculate_marketbox_risk_on_score(
+    prices: pd.DataFrame,
+    buy_date,
+    *,
+    symbol: str = "XLK",
+    stage_conf: float = 1.0,
+) -> float | None:
+    asset = _marketbox_symbol_prices(prices, symbol, buy_date)
+    spy = _marketbox_symbol_prices(prices, "SPY", buy_date)
+    btc = _marketbox_symbol_prices(prices, "BTC-USD", buy_date)
+    gold = _marketbox_symbol_prices(prices, "GC=F", buy_date)
+    if asset.empty or spy.empty or btc.empty or gold.empty:
+        return None
+
+    flow_score = _marketbox_money_flow_score(asset)
+    rs_score = _clip01(((_marketbox_rs_slope(asset, spy) + _marketbox_rs_slope(asset, btc) + _marketbox_rs_slope(asset, gold)) / 3.0) * 100.0 + 0.5)
+    vol_penalty = _marketbox_vol_penalty(asset)
+    trend_score = _marketbox_trend_score(asset)
+    composite = (0.35 * flow_score) + (0.30 * rs_score) - (0.20 * vol_penalty) + (0.35 * trend_score)
+    return _clip01(float(stage_conf) * _clip01(composite))
+
+
+def _marketbox_symbol_prices(prices: pd.DataFrame, symbol: str, buy_date) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    frame = prices[prices["symbol"].astype(str) == str(symbol)].copy()
+    if frame.empty:
+        return frame
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
+    frame = frame[frame["date"].notna()].copy()
+    buy_day = pd.to_datetime(buy_date, errors="coerce")
+    if pd.isna(buy_day):
+        return pd.DataFrame()
+    frame = frame[frame["date"] < buy_day.date()].sort_values("date").copy()
+    close_col = "adjusted_close" if "adjusted_close" in frame.columns else "close"
+    frame["mb_close"] = pd.to_numeric(frame[close_col], errors="coerce")
+    frame["mb_volume"] = pd.to_numeric(frame.get("volume", 0.0), errors="coerce").fillna(0.0)
+    return frame.dropna(subset=["mb_close"])
+
+
+def _marketbox_money_flow_score(asset: pd.DataFrame) -> float:
+    close = asset["mb_close"].astype(float)
+    volume = asset["mb_volume"].astype(float)
+    direction = np.sign(close.diff()).fillna(0.0)
+    obv = (direction * volume).cumsum()
+    obv_slope = _linreg_slope(obv.tail(63), min_points=20)
+    volume_sma = float(volume.tail(63).mean()) if len(volume.tail(63)) else 0.0
+    obv_norm = 0.0 if obv_slope is None or volume_sma == 0 else float(obv_slope) / volume_sma
+
+    up_volume = volume.where(close.diff() > 0, 0.0)
+    down_volume = volume.where(close.diff() < 0, 0.0)
+    up_sum = float(up_volume.tail(21).sum())
+    down_sum = float(down_volume.tail(21).sum())
+    if down_sum == 0.0 and up_sum > 0.0:
+        up_down_ratio = 10.0
+    elif down_sum == 0.0:
+        up_down_ratio = 0.0
+    else:
+        up_down_ratio = min(max(up_sum / down_sum, 0.0), 10.0)
+
+    returns = close.pct_change()
+    volume_mean = volume.rolling(21).mean()
+    volume_std = volume.rolling(21).std()
+    volume_z = (volume - volume_mean) / volume_std.replace(0.0, np.nan)
+    impact = returns.tail(21).corr(volume_z.tail(21))
+    impact = 0.0 if pd.isna(impact) else float(impact)
+
+    obv_component = _clip01((obv_norm * 20.0 + 1.0) / 2.0)
+    ratio_component = _clip01(up_down_ratio / 2.0)
+    impact_component = _clip01((impact + 1.0) / 2.0)
+    return _clip01((0.4 * obv_component) + (0.4 * ratio_component) + (0.2 * impact_component))
+
+
+def _marketbox_rs_slope(asset: pd.DataFrame, anchor: pd.DataFrame) -> float:
+    merged = asset[["date", "mb_close"]].merge(
+        anchor[["date", "mb_close"]],
+        on="date",
+        how="inner",
+        suffixes=("_asset", "_anchor"),
+    )
+    merged = merged[(merged["mb_close_asset"] > 0) & (merged["mb_close_anchor"] > 0)].copy()
+    if merged.empty:
+        return 0.0
+    log_ratio = np.log(merged["mb_close_asset"] / merged["mb_close_anchor"])
+    slope = _linreg_slope(log_ratio.tail(63), min_points=20)
+    return 0.0 if slope is None else float(slope)
+
+
+def _marketbox_vol_penalty(asset: pd.DataFrame) -> float:
+    close = asset["mb_close"].astype(float)
+    returns = close.pct_change()
+    rv_21_daily = returns.rolling(21).std()
+    rv_21 = float(rv_21_daily.iloc[-1] * np.sqrt(252.0)) if len(rv_21_daily) and pd.notna(rv_21_daily.iloc[-1]) else 0.0
+    downside = returns.where(returns < 0.0, 0.0)
+    downside_vol = float(downside.rolling(21).std().iloc[-1] * np.sqrt(252.0)) if len(downside) >= 21 else 0.0
+    jump_mask = returns.abs() > (2.0 * rv_21_daily)
+    jump_rate = float(jump_mask.tail(63).mean()) if len(jump_mask.tail(63)) else 0.0
+    return _clip01((rv_21 * 2.0) + downside_vol + jump_rate)
+
+
+def _marketbox_trend_score(asset: pd.DataFrame) -> float:
+    close = asset["mb_close"].astype(float)
+    latest = float(close.iloc[-1]) if not close.empty else 0.0
+    sma50 = float(close.tail(50).mean()) if len(close) >= 50 else np.nan
+    sma200 = float(close.tail(200).mean()) if len(close) >= 200 else np.nan
+    close_sma50 = 0.0 if pd.isna(sma50) or sma50 == 0 else (latest / sma50) - 1.0
+    close_sma200 = 0.0 if pd.isna(sma200) or sma200 == 0 else (latest / sma200) - 1.0
+    log_close = np.log(close[close > 0])
+    slope = _linreg_slope(log_close.tail(63), min_points=20)
+    trend_log_slope_63 = 0.0 if slope is None else float(slope)
+    return _clip01(
+        0.35 * ((close_sma50 + 1.0) / 2.0)
+        + 0.35 * ((close_sma200 + 1.0) / 2.0)
+        + 0.30 * (trend_log_slope_63 * 100.0 + 0.5)
+    )
+
+
+def _linreg_slope(values, *, min_points: int) -> float | None:
+    series = pd.Series(values, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(series) < min_points:
+        return None
+    x = np.arange(len(series), dtype=float)
+    return float(np.polyfit(x, series.to_numpy(dtype=float), 1)[0])
+
+
+def _clip01(value: float) -> float:
+    if pd.isna(value):
+        return 0.0
+    return float(np.clip(float(value), 0.0, 1.0))
 
 
 def _calculate_universe_breadth_above_sma(

@@ -12,7 +12,7 @@ import typer
 import uvicorn
 
 from bist_factor_backtest.backtest.monthly_rotation import run_monthly_rotation_backtest
-from bist_factor_backtest.config import load_config
+from bist_factor_backtest.config import BacktestConfig, load_config
 from bist_factor_backtest.dashboard.app import create_app
 from bist_factor_backtest.dashboard.datasets import (
     build_profile_dashboard_dataset,
@@ -27,6 +27,7 @@ from bist_factor_backtest.data.coverage_audit import (
     build_alternative_fill_queue,
     summarize_alternative_coverage,
 )
+from bist_factor_backtest.data.analyst_yfinance import AnalystYFinanceLoader
 from bist_factor_backtest.data.earnings_investing import InvestingEarningsLoader, merge_announcements_into_statements
 from bist_factor_backtest.data.financials_fallback_registry import (
     FinancialFallbackRegistryLoader,
@@ -402,6 +403,34 @@ def load_financials_sec(
         typer.echo(result.failures.to_string(index=False))
     typer.echo(
         f"sec_statements={len(result.statements)} sec_items={len(result.items)} sec_failures={len(result.failures)}"
+    )
+    storage.close()
+
+
+@app.command()
+def load_analyst_data_yfinance(
+    config: Path = Path("config.yaml"),
+    max_symbols: int | None = None,
+) -> None:
+    settings = load_config(config)
+    symbols = load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    if max_symbols is not None:
+        symbols = symbols[:max_symbols]
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    loader = AnalystYFinanceLoader()
+    result = loader.load(symbols)
+    if not result.consensus_history.empty:
+        storage.connection.execute("DELETE FROM analyst_consensus_history")
+        storage.append_table("analyst_consensus_history", result.consensus_history)
+    if not result.snapshot_history.empty:
+        storage.append_table("analyst_snapshot_history", result.snapshot_history)
+    if not result.failures.empty:
+        typer.echo(result.failures.to_string(index=False))
+    typer.echo(
+        f"analyst_consensus_rows={len(result.consensus_history)} "
+        f"analyst_snapshot_rows={len(result.snapshot_history)} "
+        f"analyst_failures={len(result.failures)}"
     )
     storage.close()
 
@@ -1049,6 +1078,40 @@ def _run_kap_preflight(retries: int, request_timeout_seconds: int) -> None:
     raise typer.BadParameter(f"KAP preflight failed after {max(retries,1)} checks: {errors[-1]}")
 
 
+def _append_external_us_prices_for_strategy(
+    prices: pd.DataFrame,
+    settings: BacktestConfig,
+) -> pd.DataFrame:
+    symbols: set[str] = set()
+    if settings.strategy.qqq_regime_weight_scale_mode:
+        symbols.add("QQQ")
+    if settings.strategy.marketbox_risk_on_filter_mode:
+        symbols.update({str(settings.strategy.marketbox_risk_on_symbol or "XLK"), "SPY", "BTC-USD", "GC=F"})
+    if not symbols:
+        return prices
+
+    existing = set(prices.get("symbol", pd.Series(dtype=str)).dropna().astype(str).unique()) if not prices.empty else set()
+    missing = sorted(symbols - existing)
+    if not missing:
+        return prices
+
+    extra_prices = YFinancePriceLoader().load(
+        missing,
+        settings.data.price_preload_start or settings.backtest.start_date,
+        settings.backtest.end_date,
+        yahoo_suffix=settings.data.price_symbol_suffix,
+    )
+    if extra_prices.empty:
+        return prices
+    combined = pd.concat([prices, extra_prices], ignore_index=True)
+    combined["date"] = pd.to_datetime(combined["date"]).dt.date
+    return (
+        combined.sort_values(["symbol", "date"])
+        .drop_duplicates(["symbol", "date"], keep="last")
+        .reset_index(drop=True)
+    )
+
+
 @app.command()
 def build_snapshots(config: Path = Path("config.yaml")) -> None:
     settings = load_config(config)
@@ -1062,8 +1125,21 @@ def build_snapshots(config: Path = Path("config.yaml")) -> None:
         else pd.DataFrame()
     )
     snapshots = _build_financial_snapshots_from_statements(statements, items, aliases)
+    snapshots["announcement_datetime"] = pd.to_datetime(snapshots.get("announcement_datetime"), errors="coerce")
+    snapshots = (
+        snapshots.sort_values(["symbol", "period_end", "announcement_datetime"])
+        .drop_duplicates(["symbol", "period_end"], keep="last")
+        .reset_index(drop=True)
+    )
+    snapshots = (
+        snapshots.sort_values(["symbol", "fiscal_year", "fiscal_quarter", "announcement_datetime"])
+        .drop_duplicates(["symbol", "fiscal_year", "fiscal_quarter"], keep="last")
+        .reset_index(drop=True)
+    )
     snapshots = add_ttm_values(snapshots)
     snapshots = add_earnings_momentum_features(snapshots)
+    consensus_history = storage.read_table("analyst_consensus_history")
+    snapshots = _merge_analyst_consensus_history(snapshots, consensus_history)
     storage.replace_table("financial_snapshots", snapshots)
     storage.close()
 
@@ -1074,9 +1150,17 @@ def run(config: Path = Path("config.yaml")) -> None:
     storage = DuckDbStorage(settings.data.duckdb_path)
     storage.initialize()
     prices = storage.read_table("market_prices")
+    prices = _append_external_us_prices_for_strategy(prices, settings)
     financials = storage.read_table("financial_snapshots")
+    analyst_snapshots = storage.read_table("analyst_snapshot_history")
     membership = _load_membership_for_run(settings)
-    result = run_monthly_rotation_backtest(settings, prices, financials, membership)
+    result = run_monthly_rotation_backtest(
+        settings,
+        prices,
+        financials,
+        membership,
+        analyst_snapshots=analyst_snapshots,
+    )
     _append_backtest_run(storage, settings, result, config)
     storage.append_table("backtest_monthly_results", result["monthly_results"])
     if not result["selected_positions"].empty:
@@ -1097,22 +1181,7 @@ def build_dashboard(
             storage = DuckDbStorage(settings.data.duckdb_path)
             storage.initialize()
             prices = storage.read_table("market_prices")
-            if settings.strategy.qqq_regime_weight_scale_mode:
-                qqq_prices = YFinancePriceLoader().load(
-                    ["QQQ"],
-                    settings.data.price_preload_start or settings.backtest.start_date,
-                    settings.backtest.end_date,
-                    yahoo_suffix=settings.data.price_symbol_suffix,
-                )
-                if not qqq_prices.empty:
-                    qqq_prices["date"] = pd.to_datetime(qqq_prices["date"]).dt.date
-                    prices = pd.concat([prices, qqq_prices], ignore_index=True)
-                    prices["date"] = pd.to_datetime(prices["date"]).dt.date
-                    prices = (
-                        prices.sort_values(["symbol", "date"])
-                        .drop_duplicates(["symbol", "date"], keep="last")
-                        .reset_index(drop=True)
-                    )
+            prices = _append_external_us_prices_for_strategy(prices, settings)
             financials = storage.read_table("financial_snapshots")
             if "announcement_datetime" in financials.columns:
                 financials["announcement_datetime"] = pd.to_datetime(financials["announcement_datetime"], errors="coerce")
@@ -1122,8 +1191,15 @@ def build_dashboard(
                     .reset_index(drop=True)
                 )
             financials = add_earnings_momentum_features(financials)
+            analyst_snapshots = storage.read_table("analyst_snapshot_history")
             membership = _load_membership_for_run(settings)
-            result = run_monthly_rotation_backtest(settings, prices, financials, membership)
+            result = run_monthly_rotation_backtest(
+                settings,
+                prices,
+                financials,
+                membership,
+                analyst_snapshots=analyst_snapshots,
+            )
             _append_backtest_run(storage, settings, result, profile.config_path)
             storage.append_table("backtest_monthly_results", result["monthly_results"])
             if not result["selected_positions"].empty:
@@ -1441,7 +1517,16 @@ def _build_financial_snapshots_from_statements(
         base = apply_symbol_aliases(base, aliases)
     base = base.rename(columns={"statement_id": "source_statement_id"})
     base["source_statement_id"] = base["source_statement_id"].astype(str)
-    required_item_codes = ["net_income", "equity", "operating_profit", "cash", "total_debt"]
+    required_item_codes = [
+        "net_income",
+        "equity",
+        "operating_profit",
+        "cash",
+        "total_debt",
+        "revenue",
+        "total_assets",
+        "operating_cash_flow",
+    ]
     if items.empty:
         pivot = pd.DataFrame(columns=["source_statement_id", *required_item_codes])
     else:
@@ -1472,6 +1557,34 @@ def _build_financial_snapshots_from_statements(
     data["announcement_source_url"] = data.get("announcement_source_url")
     data["raw_hash"] = data.get("raw_hash")
     return data
+
+
+def _merge_analyst_consensus_history(
+    snapshots: pd.DataFrame,
+    consensus_history: pd.DataFrame,
+) -> pd.DataFrame:
+    if snapshots.empty or consensus_history.empty:
+        return snapshots
+    merged = snapshots.copy()
+    merged["symbol"] = merged["symbol"].astype(str).str.upper()
+    merged["period_end"] = pd.to_datetime(merged["period_end"], errors="coerce").dt.date
+    updates = consensus_history.copy()
+    updates["symbol"] = updates["symbol"].astype(str).str.upper()
+    updates["period_end"] = pd.to_datetime(updates["period_end"], errors="coerce").dt.date
+    return merged.merge(
+        updates[
+            [
+                "symbol",
+                "period_end",
+                "eps_actual",
+                "eps_estimate",
+                "eps_difference",
+                "eps_surprise_percent",
+            ]
+        ].drop_duplicates(["symbol", "period_end"], keep="last"),
+        on=["symbol", "period_end"],
+        how="left",
+    )
 
 
 def _ensure_statement_ids(statements: pd.DataFrame) -> pd.DataFrame:
