@@ -113,13 +113,22 @@ def build_profile_dashboard_dataset(
             else:
                 selected_positions["used_announcement_date"] = selected_positions["used_announcement_date"].fillna(fallback_dates)
     selected_with_confidence = selected_positions.merge(symbol_confidence, on="symbol", how="left")
-    selected_with_confidence["confidence_level"] = selected_with_confidence["confidence_level"].fillna("neutral")
+    if "confidence_level" not in selected_with_confidence.columns:
+        selected_with_confidence["confidence_level"] = "neutral"
+    else:
+        selected_with_confidence["confidence_level"] = selected_with_confidence["confidence_level"].fillna("neutral")
     planned_with_confidence = planned_positions.merge(symbol_confidence, on="symbol", how="left") if not planned_positions.empty else planned_positions.copy()
     if not planned_with_confidence.empty:
-        planned_with_confidence["confidence_level"] = planned_with_confidence["confidence_level"].fillna("neutral")
+        if "confidence_level" not in planned_with_confidence.columns:
+            planned_with_confidence["confidence_level"] = "neutral"
+        else:
+            planned_with_confidence["confidence_level"] = planned_with_confidence["confidence_level"].fillna("neutral")
     preview_with_confidence = preview_positions.merge(symbol_confidence, on="symbol", how="left") if not preview_positions.empty else preview_positions.copy()
     if not preview_with_confidence.empty:
-        preview_with_confidence["confidence_level"] = preview_with_confidence["confidence_level"].fillna("neutral")
+        if "confidence_level" not in preview_with_confidence.columns:
+            preview_with_confidence["confidence_level"] = "neutral"
+        else:
+            preview_with_confidence["confidence_level"] = preview_with_confidence["confidence_level"].fillna("neutral")
         preview_with_confidence = _finalize_display_positions(preview_with_confidence)
     rejected_with_rank = _attach_provisional_rank(rejected_candidates, candidate_diagnostics)
     display_positions = build_display_positions(

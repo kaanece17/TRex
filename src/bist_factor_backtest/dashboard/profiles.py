@@ -76,6 +76,20 @@ def active_dashboard_profiles() -> list[DashboardProfile]:
             market_label="US",
         ),
         DashboardProfile(
+            id="us_large_cap_tech_asset_growth_guard",
+            label="US Large-Cap Tech Asset-Growth Guard",
+            config_path=root / "config.us_large_cap_tech_asset_growth_guard.yaml",
+            market_id="us",
+            market_label="US",
+        ),
+        DashboardProfile(
+            id="us_large_cap_tech_no_legacy_hw_top3",
+            label="US Large-Cap Tech No Legacy HW Top3",
+            config_path=root / "config.us_large_cap_tech_no_legacy_hw_top3.yaml",
+            market_id="us",
+            market_label="US",
+        ),
+        DashboardProfile(
             id="us_large_cap_tech_quality_earnings_regime",
             label="US Large-Cap Tech Q+E + QQQ Risk-Off Cash",
             config_path=root / "config.us_large_cap_tech_quality_earnings_regime.yaml",
