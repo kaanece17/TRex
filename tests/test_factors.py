@@ -339,6 +339,60 @@ class TestCalculateScores:
         assert result["score"].iloc[0] > result["score"].iloc[1]
         assert result["earnings_signal"].iloc[0] > result["earnings_signal"].iloc[1]
 
+    def test_calculateScores_selectionScore_appliesPitBonusesAndPenalties(self):
+        data = pd.DataFrame(
+            [
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "filing_lag_days": 25,
+                    "announcement_age_days": 10,
+                    "announcement_drift_return": 0.12,
+                    "revenue_ttm_growth_yoy": 0.30,
+                    "revenue_acceleration": 0.10,
+                    "asset_growth_yoy": 0.12,
+                    "accruals_ratio": 0.02,
+                },
+                {
+                    "net_income_ttm": 200,
+                    "previous_net_income_ttm": 100,
+                    "equity": 1000,
+                    "operating_profit_ttm": 150,
+                    "firm_value": 1300,
+                    "filing_lag_days": 70,
+                    "announcement_age_days": 45,
+                    "announcement_drift_return": -0.05,
+                    "revenue_ttm_growth_yoy": -0.10,
+                    "revenue_acceleration": -0.08,
+                    "asset_growth_yoy": 0.40,
+                    "accruals_ratio": 0.15,
+                },
+            ]
+        )
+
+        result = calculate_scores(
+            data,
+            ScoringConfig(
+                filing_timeliness_weight=0.2,
+                announcement_freshness_weight=0.2,
+                announcement_drift_weight=0.2,
+                revenue_growth_weight=0.2,
+                revenue_acceleration_weight=0.2,
+                asset_growth_penalty=0.1,
+                asset_growth_threshold=0.25,
+                accruals_penalty=0.1,
+                accruals_ratio_threshold=0.08,
+                delay_penalty=0.1,
+                filing_lag_threshold_days=50,
+            ),
+        )
+
+        assert result["score"].iloc[0] == pytest.approx(result["score"].iloc[1])
+        assert result["selection_score"].iloc[0] > result["selection_score"].iloc[1]
+
 
 class TestApplyFilters:
     def test_applyFilters_x1DominantLowGrowth_rejectsOnlyMatchingRows(self):

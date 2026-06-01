@@ -159,6 +159,38 @@ def _attach_selection_score(result: pd.DataFrame, scoring: ScoringConfig | None)
         )
         result["selection_score"] = result["selection_score"] - penalty_mask.fillna(False).astype(float) * scoring.cheap_value_trap_penalty
 
+    _apply_rank_bonus(result, "filing_lag_days", scoring.filing_timeliness_weight, ascending=False)
+    _apply_rank_bonus(result, "announcement_age_days", scoring.announcement_freshness_weight, ascending=False)
+    _apply_rank_bonus(result, "announcement_drift_return", scoring.announcement_drift_weight, ascending=True)
+    _apply_rank_bonus(result, "revenue_ttm_growth_yoy", scoring.revenue_growth_weight, ascending=True)
+    _apply_rank_bonus(result, "revenue_acceleration", scoring.revenue_acceleration_weight, ascending=True)
+    _apply_rank_bonus(result, "eps_surprise_percent", scoring.eps_surprise_weight, ascending=True)
+    _apply_rank_bonus(result, "analyst_revision_balance", scoring.analyst_revision_weight, ascending=True)
+    _apply_rank_bonus(result, "recommendation_score", scoring.recommendation_weight, ascending=True)
+
+    if scoring.asset_growth_penalty != 0 and scoring.asset_growth_threshold is not None and "asset_growth_yoy" in result.columns:
+        penalty_mask = pd.to_numeric(result["asset_growth_yoy"], errors="coerce") > scoring.asset_growth_threshold
+        result["selection_score"] = result["selection_score"] - penalty_mask.fillna(False).astype(float) * scoring.asset_growth_penalty
+
+    if scoring.accruals_penalty != 0 and scoring.accruals_ratio_threshold is not None and "accruals_ratio" in result.columns:
+        penalty_mask = pd.to_numeric(result["accruals_ratio"], errors="coerce") > scoring.accruals_ratio_threshold
+        result["selection_score"] = result["selection_score"] - penalty_mask.fillna(False).astype(float) * scoring.accruals_penalty
+
+    if scoring.delay_penalty != 0 and scoring.filing_lag_threshold_days is not None and "filing_lag_days" in result.columns:
+        penalty_mask = pd.to_numeric(result["filing_lag_days"], errors="coerce") > scoring.filing_lag_threshold_days
+        result["selection_score"] = result["selection_score"] - penalty_mask.fillna(False).astype(float) * scoring.delay_penalty
+
+
+def _apply_rank_bonus(result: pd.DataFrame, column: str, weight: float, ascending: bool) -> None:
+    if weight == 0 or column not in result.columns:
+        return
+    series = pd.to_numeric(result[column], errors="coerce")
+    if series.notna().sum() == 0:
+        return
+    ranked = series.rank(method="average", pct=True, ascending=ascending)
+    bonus = (ranked.fillna(0.5) - 0.5) * weight
+    result["selection_score"] = result["selection_score"] + bonus
+
 
 def _cap_series_at_quantile(result: pd.DataFrame, column: str, quantile: float | None) -> None:
     if quantile is None:

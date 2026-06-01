@@ -36,6 +36,18 @@ ITEM_CONCEPTS = {
         ("us-gaap", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"),
         ("us-gaap", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations"),
     ],
+    "revenue": [
+        ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+        ("us-gaap", "SalesRevenueNet"),
+        ("us-gaap", "Revenues"),
+    ],
+    "total_assets": [
+        ("us-gaap", "Assets"),
+    ],
+    "operating_cash_flow": [
+        ("us-gaap", "NetCashProvidedByUsedInOperatingActivities"),
+        ("us-gaap", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"),
+    ],
     "shares_outstanding": [
         ("dei", "EntityCommonStockSharesOutstanding"),
         ("us-gaap", "CommonStockSharesOutstanding"),
@@ -284,7 +296,7 @@ def _build_filing_rows(
             "value": value,
         }
         for item_code, value in item_values.items()
-        if item_code in {"net_income", "equity", "operating_profit", "cash", "total_debt"} and value is not None
+        if item_code in {"net_income", "equity", "operating_profit", "cash", "total_debt", "revenue", "total_assets", "operating_cash_flow"} and value is not None
     ]
     return statement_row, item_rows
 

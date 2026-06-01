@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     operating_profit DOUBLE,
     cash DOUBLE,
     total_debt DOUBLE,
+    revenue DOUBLE,
+    total_assets DOUBLE,
+    operating_cash_flow DOUBLE,
     shares_outstanding DOUBLE,
     shares_announcement_datetime TIMESTAMP,
     shares_source_url TEXT,
@@ -68,6 +71,19 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     net_income_growth DOUBLE,
     ni_ttm_growth_yoy DOUBLE,
     op_ttm_growth_yoy DOUBLE,
+    revenue_ttm DOUBLE,
+    previous_revenue_ttm DOUBLE,
+    revenue_ttm_growth_yoy DOUBLE,
+    revenue_acceleration DOUBLE,
+    asset_growth_yoy DOUBLE,
+    accruals_ratio DOUBLE,
+    filing_lag_days DOUBLE,
+    eps_actual DOUBLE,
+    eps_estimate DOUBLE,
+    eps_difference DOUBLE,
+    eps_surprise_percent DOUBLE,
+    analyst_revision_balance DOUBLE,
+    recommendation_score DOUBLE,
     earnings_acceleration DOUBLE,
     profitability_quality_combo DOUBLE,
     firm_value_price DOUBLE,
@@ -77,6 +93,39 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     source_url TEXT,
     announcement_source_url TEXT,
     raw_hash TEXT
+);
+
+CREATE TABLE IF NOT EXISTS analyst_consensus_history (
+    symbol TEXT,
+    period_end DATE,
+    eps_actual DOUBLE,
+    eps_estimate DOUBLE,
+    eps_difference DOUBLE,
+    eps_surprise_percent DOUBLE
+);
+
+CREATE TABLE IF NOT EXISTS analyst_snapshot_history (
+    symbol TEXT,
+    as_of_datetime TIMESTAMP,
+    as_of_date DATE,
+    period TEXT,
+    earnings_estimate_avg DOUBLE,
+    earnings_estimate_low DOUBLE,
+    earnings_estimate_high DOUBLE,
+    earnings_estimate_analysts DOUBLE,
+    revenue_estimate_avg DOUBLE,
+    revenue_estimate_low DOUBLE,
+    revenue_estimate_high DOUBLE,
+    revenue_estimate_analysts DOUBLE,
+    up_last7days DOUBLE,
+    up_last30days DOUBLE,
+    down_last7days DOUBLE,
+    down_last30days DOUBLE,
+    strong_buy DOUBLE,
+    buy DOUBLE,
+    hold DOUBLE,
+    sell DOUBLE,
+    strong_sell DOUBLE
 );
 
 CREATE TABLE IF NOT EXISTS market_prices (
@@ -169,6 +218,24 @@ CREATE TABLE IF NOT EXISTS backtest_selected_positions (
     shares_source_url TEXT,
     total_debt DOUBLE,
     cash DOUBLE,
+    revenue DOUBLE,
+    total_assets DOUBLE,
+    operating_cash_flow DOUBLE,
+    revenue_ttm DOUBLE,
+    previous_revenue_ttm DOUBLE,
+    revenue_ttm_growth_yoy DOUBLE,
+    revenue_acceleration DOUBLE,
+    asset_growth_yoy DOUBLE,
+    accruals_ratio DOUBLE,
+    filing_lag_days DOUBLE,
+    announcement_age_days DOUBLE,
+    announcement_drift_return DOUBLE,
+    eps_actual DOUBLE,
+    eps_estimate DOUBLE,
+    eps_difference DOUBLE,
+    eps_surprise_percent DOUBLE,
+    analyst_revision_balance DOUBLE,
+    recommendation_score DOUBLE,
     buy_date DATE,
     buy_price DOUBLE,
     sell_date DATE,
@@ -246,12 +313,56 @@ class DuckDbStorage:
         snapshot_columns = self.connection.execute("PRAGMA table_info('financial_snapshots')").df()["name"].tolist()
         if "announcement_source_url" not in snapshot_columns:
             self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN announcement_source_url TEXT")
-        for column in ["ni_ttm_growth_yoy", "op_ttm_growth_yoy", "earnings_acceleration", "profitability_quality_combo"]:
+        for column in [
+            "revenue",
+            "total_assets",
+            "operating_cash_flow",
+            "ni_ttm_growth_yoy",
+            "op_ttm_growth_yoy",
+            "revenue_ttm",
+            "previous_revenue_ttm",
+            "revenue_ttm_growth_yoy",
+            "revenue_acceleration",
+            "asset_growth_yoy",
+            "accruals_ratio",
+            "filing_lag_days",
+            "eps_actual",
+            "eps_estimate",
+            "eps_difference",
+            "eps_surprise_percent",
+            "analyst_revision_balance",
+            "recommendation_score",
+            "earnings_acceleration",
+            "profitability_quality_combo",
+        ]:
             if column not in snapshot_columns:
                 self.connection.execute(f"ALTER TABLE financial_snapshots ADD COLUMN {column} DOUBLE")
                 snapshot_columns.append(column)
         position_columns = self.connection.execute("PRAGMA table_info('backtest_selected_positions')").df()["name"].tolist()
-        for column in ["ni_ttm_growth_yoy", "op_ttm_growth_yoy", "earnings_acceleration", "profitability_quality_combo"]:
+        for column in [
+            "revenue",
+            "total_assets",
+            "operating_cash_flow",
+            "ni_ttm_growth_yoy",
+            "op_ttm_growth_yoy",
+            "revenue_ttm",
+            "previous_revenue_ttm",
+            "revenue_ttm_growth_yoy",
+            "revenue_acceleration",
+            "asset_growth_yoy",
+            "accruals_ratio",
+            "filing_lag_days",
+            "announcement_age_days",
+            "announcement_drift_return",
+            "eps_actual",
+            "eps_estimate",
+            "eps_difference",
+            "eps_surprise_percent",
+            "analyst_revision_balance",
+            "recommendation_score",
+            "earnings_acceleration",
+            "profitability_quality_combo",
+        ]:
             if column not in position_columns:
                 self.connection.execute(f"ALTER TABLE backtest_selected_positions ADD COLUMN {column} DOUBLE")
                 position_columns.append(column)

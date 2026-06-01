@@ -255,3 +255,35 @@ class TestAddEarningsMomentumFeatures:
 
         assert pd.isna(current["ni_ttm_growth_yoy"])
         assert pd.isna(current["op_ttm_growth_yoy"])
+
+    def test_addEarningsMomentumFeatures_revenueAssetsAndAccruals_returnsDerivedSignals(self):
+        rows = []
+        for year, revenue_values, cfo_values, assets in [
+            (2023, [100, 210, 330, 460], [20, 45, 75, 110], [500, 520, 540, 560]),
+            (2024, [130, 280, 450, 650], [25, 60, 105, 150], [620, 650, 690, 730]),
+        ]:
+            for quarter, (revenue, cfo, total_assets) in enumerate(zip(revenue_values, cfo_values, assets, strict=False), start=1):
+                rows.append(
+                    {
+                        "symbol": "ABC",
+                        "period_end": f"{year}-{quarter * 3:02d}-28",
+                        "fiscal_year": year,
+                        "fiscal_quarter": quarter,
+                        "announcement_date": f"{year}-{quarter * 3:02d}-30",
+                        "net_income": revenue / 5,
+                        "operating_profit": revenue / 4,
+                        "revenue": revenue,
+                        "operating_cash_flow": cfo,
+                        "total_assets": total_assets,
+                    }
+                )
+
+        result = add_earnings_momentum_features(add_ttm_values(pd.DataFrame(rows)))
+        current = result[(result["fiscal_year"] == 2024) & (result["fiscal_quarter"] == 4)].iloc[0]
+
+        assert current["revenue_ttm"] == pytest.approx(650)
+        assert current["previous_revenue_ttm"] == pytest.approx(460)
+        assert current["revenue_ttm_growth_yoy"] == pytest.approx((650 - 460) / 460)
+        assert current["asset_growth_yoy"] == pytest.approx((730 - 560) / 560)
+        assert current["filing_lag_days"] == 2
+        assert pd.notna(current["accruals_ratio"])
