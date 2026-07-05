@@ -14,10 +14,7 @@ data:
     - financial_fallback_registry
   primary_announcement_source: investing
   announcement_fallback_sources:
-    - queenstocks
     - issuer_ir
-    - mkk_esirket
-    - announcement_fallback_registry
 
 universe:
   name: BIST_SANAYI

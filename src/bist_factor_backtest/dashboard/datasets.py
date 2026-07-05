@@ -779,10 +779,9 @@ def build_monthly_regimes(
 def _attach_monthly_regimes(display_positions: pd.DataFrame, monthly_regimes: pd.DataFrame) -> pd.DataFrame:
     if display_positions.empty or monthly_regimes.empty:
         return display_positions
-    available = [
+    regime_columns = [
         column
         for column in [
-            "month",
             "breadth_200d",
             "regime_key",
             "regime_label",
@@ -791,9 +790,11 @@ def _attach_monthly_regimes(display_positions: pd.DataFrame, monthly_regimes: pd
         ]
         if column in monthly_regimes.columns
     ]
+    available = ["month", *regime_columns] if "month" in monthly_regimes.columns else []
     if "month" not in available:
         return display_positions
-    return display_positions.merge(monthly_regimes[available].drop_duplicates(subset=["month"]), on="month", how="left")
+    result = display_positions.drop(columns=regime_columns, errors="ignore").copy()
+    return result.merge(monthly_regimes[available].drop_duplicates(subset=["month"]), on="month", how="left")
 
 
 def _monthly_regime_lookup(monthly_regimes: pd.DataFrame, month: str | None) -> dict[str, object]:

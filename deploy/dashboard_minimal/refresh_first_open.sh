@@ -98,6 +98,48 @@ cleanup_logs() {
   find /opt/trex-dashboard -maxdepth 1 -type f -name 'refresh-*.log' | sort | head -n -8 | xargs -r rm -f
 }
 
+previous_month_local() {
+  TZ=Europe/Istanbul python3 - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+now = datetime.now(ZoneInfo("Europe/Istanbul"))
+year = now.year
+month = now.month - 1
+if month == 0:
+    month = 12
+    year -= 1
+print(f"{year:04d}-{month:02d}")
+PY
+}
+
+verify_dashboard_rollforward() {
+  local expected_current_month
+  local expected_latest_month
+  expected_current_month="$(current_month_local)"
+  expected_latest_month="$(previous_month_local)"
+  /opt/trex-dashboard/.venv/bin/python - "$expected_current_month" "$expected_latest_month" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary_path = Path("/opt/trex-dashboard/data/dashboard/momentum_watchlist/summary.json")
+if not summary_path.exists():
+    raise SystemExit("accepted summary.json missing after refresh")
+payload = json.loads(summary_path.read_text(encoding="utf-8"))
+current_month = str(payload.get("current_month") or "")
+latest_selected_month = str(payload.get("latest_selected_month") or "")
+if current_month != sys.argv[1]:
+    raise SystemExit(
+        f"accepted current_month did not roll forward: expected {sys.argv[1]} got {current_month}"
+    )
+if latest_selected_month != sys.argv[2]:
+    raise SystemExit(
+        f"accepted latest_selected_month did not close prior month: expected {sys.argv[2]} got {latest_selected_month}"
+    )
+PY
+}
+
 run() {
   CURRENT_STEP="$*"
   echo "[$(date -u)] $*"
@@ -115,14 +157,25 @@ write_status "running" "Ay basi sabah refresh calisiyor."
     exit 0
   fi
   TRADE_DATE=$(TZ=Europe/Istanbul date +%F)
-  run /opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli capture-first-open-prices \
+  CURRENT_STEP="capture-first-open-prices"
+  echo "[$(date -u)] /opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli capture-first-open-prices --config /opt/trex-dashboard/config.formula_research_momentum.yaml --trade-date $TRADE_DATE"
+  CAPTURE_OUTPUT=$(/opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli capture-first-open-prices \
     --config /opt/trex-dashboard/config.formula_research_momentum.yaml \
-    --trade-date "$TRADE_DATE"
+    --trade-date "$TRADE_DATE")
+  echo "$CAPTURE_OUTPUT"
+  CAPTURED_COUNT=$(printf '%s\n' "$CAPTURE_OUTPUT" | sed -n 's/.*captured=\([0-9][0-9]*\).*/\1/p' | tail -n1)
+  if [ -z "${CAPTURED_COUNT:-}" ] || [ "$CAPTURED_COUNT" -eq 0 ]; then
+    echo "[$(date -u)] first-open capture produced zero rows; refusing to mark month completed"
+    exit 1
+  fi
   run /opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli refresh-dashboard \
     --output-dir /opt/trex-dashboard/data/dashboard \
     --registry-file /opt/trex-dashboard/data/universe/bist_sanayi_investing_registry.csv \
     --skip-price-load \
     --skip-network-loaders
+  CURRENT_STEP="verify-dashboard-rollforward"
+  echo "[$(date -u)] verifying accepted dashboard rolled forward to current month"
+  verify_dashboard_rollforward
   mark_completed_month
   cleanup_logs
   echo "[$(date -u)] month-start refresh done"

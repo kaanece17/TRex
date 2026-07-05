@@ -2,7 +2,7 @@
 Description=Run TRex Dashboard month-start refresh (Istanbul morning follow-up)
 
 [Timer]
-OnCalendar=*-*-01,02,03,04,05,06,07 07:00:00 Europe/Istanbul
+OnCalendar=*-*-01,02,03,04,05,06,07 10:10:00 Europe/Istanbul
 Persistent=true
 Unit=trex-dashboard-refresh-first-open.service
 

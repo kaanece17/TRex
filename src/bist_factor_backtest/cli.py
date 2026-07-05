@@ -1887,6 +1887,36 @@ def _upsert_statements(storage: DuckDbStorage, statements: pd.DataFrame) -> None
     if statements.empty:
         return
     statements = _ensure_statement_ids(statements)
+    preserve_columns = [
+        "announcement_datetime",
+        "announcement_date",
+        "announcement_source_url",
+        "announcement_source_system",
+        "shares_announcement_datetime",
+        "shares_source_url",
+        "source_system",
+        "source_url",
+    ]
+    existing = storage.read_table("financial_statements")
+    if not existing.empty:
+        existing = existing[existing["statement_id"].astype(str).isin(statements["statement_id"].astype(str))].copy()
+        if not existing.empty:
+            merged = statements.merge(
+                existing[["statement_id", *[column for column in preserve_columns if column in existing.columns]]],
+                on="statement_id",
+                how="left",
+                suffixes=("", "__existing"),
+            )
+            for column in preserve_columns:
+                existing_column = f"{column}__existing"
+                if existing_column not in merged.columns:
+                    continue
+                if column not in merged.columns:
+                    merged[column] = merged[existing_column]
+                else:
+                    merged[column] = merged[column].combine_first(merged[existing_column])
+                merged = merged.drop(columns=[existing_column])
+            statements = merged
     statement_ids = statements["statement_id"].astype(str).tolist()
     placeholders = ", ".join(["?"] * len(statement_ids))
     storage.connection.execute(

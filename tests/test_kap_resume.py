@@ -98,6 +98,49 @@ class TestKapResumeUpsert:
         assert result == 123.0
         storage.close()
 
+    def test_upsertStatements_preservesExistingAnnouncementMetadata_whenIncomingIsNull(self, tmp_path):
+        storage = DuckDbStorage(tmp_path / "test.duckdb")
+        storage.initialize()
+        storage.append_table(
+            "financial_statements",
+            pd.DataFrame(
+                [
+                    {
+                        "statement_id": "AAA-1",
+                        "symbol": "AAA",
+                        "shares_outstanding": 10.0,
+                        "announcement_date": "2026-03-10",
+                        "announcement_source_system": "investing",
+                    }
+                ]
+            ),
+        )
+
+        _upsert_statements(
+            storage,
+            pd.DataFrame(
+                [
+                    {
+                        "statement_id": "AAA-1",
+                        "symbol": "AAA",
+                        "shares_outstanding": 12.0,
+                        "announcement_date": None,
+                        "announcement_source_system": None,
+                    }
+                ]
+            ),
+        )
+        result = storage.connection.execute(
+            """
+            SELECT shares_outstanding, announcement_date, announcement_source_system
+            FROM financial_statements
+            WHERE statement_id = 'AAA-1'
+            """
+        ).fetchone()
+
+        assert result == (12.0, pd.Timestamp("2026-03-10").date(), "investing")
+        storage.close()
+
     def test_replaceItemsForStatements_existingItems_replacesOnlyTargetStatements(self, tmp_path):
         storage = DuckDbStorage(tmp_path / "test.duckdb")
         storage.initialize()

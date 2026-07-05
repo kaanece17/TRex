@@ -16,7 +16,7 @@ class DashboardProfile:
 
 def active_dashboard_profiles() -> list[DashboardProfile]:
     root = project_root()
-    return [
+    profiles = [
         DashboardProfile(
             id="momentum_watchlist",
             label="Kabul Edilen Ana Profil",
@@ -41,5 +41,7 @@ def active_dashboard_profiles() -> list[DashboardProfile]:
             id="momentum_watchlist_queenstocks_shadow",
             label="Kabul Edilen Ana Profil (QueenStocks Fallback Shadow)",
             config_path=root / "config.formula_research_momentum_queenstocks_shadow.yaml",
+            active=False,
         ),
     ]
+    return [profile for profile in profiles if profile.active]
