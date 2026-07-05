@@ -1317,6 +1317,11 @@ def _load_artifact_backtest_result(root: Path, profile_id: str) -> dict | None:
         run_id = str(monthly_results["run_id"].iloc[0]) if "run_id" in monthly_results.columns and not monthly_results.empty else None
     if not run_id:
         return None
+    open_month = str(summary.get("current_month")) if summary.get("open_month_excluded_from_metrics") else None
+    unresolved_month = _detect_earliest_unresolved_month(selected_positions)
+    if unresolved_month is not None:
+        if open_month is None or str(unresolved_month) < str(open_month):
+            open_month = str(unresolved_month)
     return {
         "run_id": str(run_id),
         "created_at": created_at.to_pydatetime(),
@@ -1325,8 +1330,29 @@ def _load_artifact_backtest_result(root: Path, profile_id: str) -> dict | None:
         "planned_positions": pd.DataFrame(),
         "rejected_candidates": pd.DataFrame(),
         "candidate_diagnostics": pd.DataFrame(),
-        "open_month": str(summary.get("current_month")) if summary.get("open_month_excluded_from_metrics") else None,
+        "open_month": open_month,
     }
+
+
+def _detect_earliest_unresolved_month(selected_positions: pd.DataFrame) -> str | None:
+    if selected_positions.empty or "month" not in selected_positions.columns:
+        return None
+    unresolved_masks: list[pd.Series] = []
+    for column in ("net_return", "gross_return", "sell_price", "buy_price"):
+        if column in selected_positions.columns:
+            unresolved_masks.append(selected_positions[column].isna())
+    if "reason" in selected_positions.columns:
+        unresolved_masks.append(selected_positions["reason"].notna())
+    if not unresolved_masks:
+        return None
+    unresolved_mask = unresolved_masks[0].copy()
+    for mask in unresolved_masks[1:]:
+        unresolved_mask = unresolved_mask | mask
+    unresolved = selected_positions[unresolved_mask].copy()
+    if unresolved.empty:
+        return None
+    months = sorted(unresolved["month"].dropna().astype(str).unique().tolist())
+    return months[0] if months else None
 
 
 def _load_backtest_result_for_run(storage: DuckDbStorage, run_id: str) -> dict | None:
@@ -1363,6 +1389,16 @@ def _load_backtest_result_for_run(storage: DuckDbStorage, run_id: str) -> dict |
     created_at = datetime.now(UTC)
     if not run_meta.empty and pd.notna(run_meta.loc[0, "created_at"]):
         created_at = pd.to_datetime(run_meta.loc[0, "created_at"]).to_pydatetime()
+    open_month = _detect_earliest_unresolved_month(selected_positions)
+    if open_month is None and not monthly_results.empty and "month" in monthly_results.columns:
+        unresolved_monthly = monthly_results[
+            monthly_results["net_return"].isna()
+            | monthly_results["gross_return"].isna()
+            | monthly_results["sell_date"].isna()
+        ].copy()
+        if not unresolved_monthly.empty:
+            unresolved_months = sorted(unresolved_monthly["month"].dropna().astype(str).unique().tolist())
+            open_month = unresolved_months[0] if unresolved_months else None
     return {
         "run_id": run_id,
         "created_at": created_at,
@@ -1371,7 +1407,7 @@ def _load_backtest_result_for_run(storage: DuckDbStorage, run_id: str) -> dict |
         "planned_positions": pd.DataFrame(),
         "rejected_candidates": pd.DataFrame(),
         "candidate_diagnostics": pd.DataFrame(),
-        "open_month": None,
+        "open_month": open_month,
     }
 
 
