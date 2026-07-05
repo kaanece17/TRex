@@ -8,6 +8,7 @@ Type=oneshot
 User=trexdash
 Group=trexdash
 WorkingDirectory=/opt/trex-dashboard
+EnvironmentFile=/etc/trex-dashboard/queenstocks.env
 ExecStart=/opt/trex-dashboard/check_first_open_day.sh
 NoNewPrivileges=true
 PrivateTmp=true

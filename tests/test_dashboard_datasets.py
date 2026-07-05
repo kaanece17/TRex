@@ -1,14 +1,134 @@
+from pathlib import Path
+
 import pandas as pd
 
 from bist_factor_backtest.dashboard.datasets import (
+    build_display_positions,
+    build_summary,
     build_current_month_alerts,
     build_missing_financials,
     build_stale_financial_base_alerts,
+    _merge_symbol_confidence,
+    _annotate_financial_base_freshness,
     build_symbol_confidence,
+)
+from bist_factor_backtest.config import (
+    BacktestConfig,
+    BacktestRangeConfig,
+    CostsConfig,
+    DataConfig,
+    FiltersConfig,
+    PointInTimeConfig,
+    ProjectConfig,
+    ScoringConfig,
+    StrategyConfig,
+    UniverseConfig,
 )
 
 
 class TestDashboardDatasets:
+    def test_buildSummary_keepsMetricsOnLastClosedMonthDuringPreview(self):
+        config = BacktestConfig(
+            project=ProjectConfig(name="test"),
+            data=DataConfig(duckdb_path=Path("dummy.duckdb")),
+            universe=UniverseConfig(symbols_file=Path("symbols.csv"), membership_file=Path("membership.csv"), name="BIST_SANAYI"),
+            point_in_time=PointInTimeConfig(),
+            strategy=StrategyConfig(),
+            scoring=ScoringConfig(),
+            costs=CostsConfig(),
+            filters=FiltersConfig(),
+            backtest=BacktestRangeConfig(start_date=pd.Timestamp("2026-01-01").date(), end_date=pd.Timestamp("2026-12-31").date(), initial_capital=100000.0),
+        )
+        monthly_results = pd.DataFrame(
+            [
+                {"month": "2026-04", "net_return": 0.10, "portfolio_value_start": 100000.0, "portfolio_value_end": 110000.0},
+                {"month": "2026-05", "net_return": -0.05, "portfolio_value_start": 110000.0, "portfolio_value_end": 104500.0},
+            ]
+        )
+        display_positions = pd.DataFrame([{"month": "2026-05", "symbol": "AAA"}])
+        realized_positions = pd.DataFrame()
+        monthly_regimes = pd.DataFrame()
+        preview_positions = pd.DataFrame([{"month": "2026-06", "symbol": "BBB"}])
+
+        summary = build_summary(
+            config,
+            monthly_results,
+            display_positions,
+            realized_positions,
+            monthly_regimes,
+            preview_available=True,
+            preview_positions=preview_positions,
+        )
+
+        assert summary["latest_selected_month"] == "2026-04"
+        assert summary["metrics_through_month"] == "2026-04"
+        assert summary["open_month_excluded_from_metrics"] is True
+        assert summary["number_of_months"] == 1
+
+    def test_buildSummary_includesLatestClosedMonthWhenPreviewIsNextMonth(self):
+        config = BacktestConfig(
+            project=ProjectConfig(name="test"),
+            data=DataConfig(duckdb_path=Path("dummy.duckdb")),
+            universe=UniverseConfig(symbols_file=Path("symbols.csv"), membership_file=Path("membership.csv"), name="BIST_SANAYI"),
+            point_in_time=PointInTimeConfig(),
+            strategy=StrategyConfig(),
+            scoring=ScoringConfig(),
+            costs=CostsConfig(),
+            filters=FiltersConfig(),
+            backtest=BacktestRangeConfig(start_date=pd.Timestamp("2026-01-01").date(), end_date=pd.Timestamp("2026-12-31").date(), initial_capital=100000.0),
+        )
+        monthly_results = pd.DataFrame(
+            [
+                {"month": "2026-04", "net_return": 0.10, "portfolio_value_start": 100000.0, "portfolio_value_end": 110000.0},
+                {"month": "2026-05", "net_return": -0.05, "portfolio_value_start": 110000.0, "portfolio_value_end": 104500.0},
+            ]
+        )
+        display_positions = pd.DataFrame([{"month": "2026-05", "symbol": "AAA"}])
+        realized_positions = pd.DataFrame([{"month": "2026-05", "symbol": "AAA"}])
+        monthly_regimes = pd.DataFrame()
+        preview_positions = pd.DataFrame([{"month": "2026-06", "symbol": "BBB"}])
+
+        summary = build_summary(
+            config,
+            monthly_results,
+            display_positions,
+            realized_positions,
+            monthly_regimes,
+            preview_available=True,
+            preview_positions=preview_positions,
+            latest_data_month_closed=True,
+        )
+
+        assert summary["latest_selected_month"] == "2026-05"
+        assert summary["metrics_through_month"] == "2026-05"
+        assert summary["open_month_excluded_from_metrics"] is False
+        assert summary["number_of_months"] == 2
+
+    def test_buildDisplayPositions_keepsRealizedRowsWhenLatestMonthAlreadyClosed(self):
+        planned_positions = pd.DataFrame([{"month": "2026-06", "symbol": "BBB"}])
+        realized_positions = pd.DataFrame(
+            [
+                {
+                    "month": "2026-05",
+                    "symbol": "AAA",
+                    "fiscal_year": 2025,
+                    "fiscal_quarter": 4,
+                    "buy_date": "2026-05-04",
+                }
+            ]
+        )
+
+        result = build_display_positions(
+            planned_positions=planned_positions,
+            realized_positions=realized_positions,
+            rejected_candidates=pd.DataFrame(),
+            latest_data_month=None,
+        )
+
+        assert result["month"].tolist() == ["2026-05"]
+        assert result["symbol"].tolist() == ["AAA"]
+        assert result["position_status"].tolist() == ["realized"]
+
     def test_buildSymbolConfidence_classifiesWinnerLoserAndNeutral(self):
         selected = pd.DataFrame(
             [
@@ -33,6 +153,27 @@ class TestDashboardDatasets:
         assert result.loc["LOS", "confidence_level"] == "loser"
         assert result.loc["NEU", "confidence_level"] == "neutral"
         assert result.loc["SMALL", "confidence_level"] == "neutral"
+
+    def test_mergeSymbolConfidence_preservesExistingColumnAndFillsMissing(self):
+        frame = pd.DataFrame(
+            [
+                {"symbol": "WIN", "confidence_level": None, "repeat_count": None},
+                {"symbol": "KEEP", "confidence_level": "manual", "repeat_count": 9},
+            ]
+        )
+        confidence = pd.DataFrame(
+            [
+                {"symbol": "WIN", "confidence_level": "winner", "repeat_count": 3},
+                {"symbol": "KEEP", "confidence_level": "loser", "repeat_count": 2},
+            ]
+        )
+
+        result = _merge_symbol_confidence(frame, confidence).set_index("symbol")
+
+        assert result.loc["WIN", "confidence_level"] == "winner"
+        assert result.loc["KEEP", "confidence_level"] == "manual"
+        assert result.loc["WIN", "repeat_count"] == 3
+        assert result.loc["KEEP", "repeat_count"] == 9
 
     def test_buildMissingFinancials_includesAnnouncementDateAndMissingFields(self):
         rejected = pd.DataFrame(
@@ -136,3 +277,21 @@ class TestDashboardDatasets:
         result = build_stale_financial_base_alerts(positions, "2026-05")
 
         assert result["symbol"].tolist() == ["MERKO"]
+
+    def test_annotateFinancialBaseFreshness_handlesSingleScalarFiscalValues(self):
+        positions = pd.DataFrame(
+            [
+                {
+                    "month": "2026-05",
+                    "symbol": "AAA",
+                    "fiscal_year": 2025.0,
+                    "fiscal_quarter": 4.0,
+                    "buy_date": "2026-05-04",
+                }
+            ]
+        )
+
+        result = _annotate_financial_base_freshness(positions)
+
+        assert result["financial_base_quarter_lag"].iloc[0] == 2
+        assert bool(result["stale_financial_base"].iloc[0]) is False

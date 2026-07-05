@@ -61,6 +61,7 @@ def run_monthly_rotation_backtest(
     previous_held_symbols: set[str] = set()
     selection_plan: list[dict] = []
     realized_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
+    cooldown_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
 
     for month_index, month in enumerate(months):
         buy_date = get_first_trading_day(calendar_prices, month)
@@ -134,6 +135,12 @@ def run_monthly_rotation_backtest(
                 rejected["month"] = month
                 rejected_candidates.append(rejected)
             ranked = filtered.sort_values(["selection_score", "score"], ascending=False)
+            ranked = _apply_symbol_cooldown_exclusion_rule(
+                ranked,
+                config,
+                month,
+                cooldown_symbol_history,
+            )
             selected = _apply_hold_buffer_rule(
                 ranked,
                 previous_held_symbols,
@@ -147,6 +154,14 @@ def run_monthly_rotation_backtest(
         )
         positions = _apply_earnings_quality_weight_scaling_rule(positions, config)
         positions = _apply_technical_confirmation_rule(positions, config)
+        _record_symbol_cooldown_history(
+            cooldown_symbol_history,
+            positions,
+            prepared_prices,
+            plan_month=month,
+            buy_date=buy_date,
+            sell_date=sell_date,
+        )
         selection_plan.append(
             {
                 "month": month,
@@ -380,6 +395,57 @@ def _apply_technical_confirmation_rule(
     return survivors
 
 
+def _apply_symbol_cooldown_exclusion_rule(
+    ranked: pd.DataFrame,
+    config: BacktestConfig,
+    month: str,
+    cooldown_symbol_history: dict[str, list[tuple[pd.Period, float]]],
+) -> pd.DataFrame:
+    mode = config.strategy.symbol_cooldown_exclusion_mode
+    if ranked.empty or not mode:
+        return ranked
+    if mode not in {
+        "prior_high_return_same_symbol_exclude",
+        "prior_high_return_x1_heavy_same_symbol_exclude",
+    }:
+        return ranked
+
+    lookback_months = config.strategy.symbol_cooldown_exclusion_lookback_months
+    return_threshold = config.strategy.symbol_cooldown_exclusion_return_threshold
+    x1_share_threshold = config.strategy.symbol_cooldown_exclusion_x1_share_threshold
+    if lookback_months <= 0:
+        return ranked
+
+    current_period = pd.Period(month, freq="M")
+    exclude_mask = []
+    for symbol in ranked["symbol"].astype(str):
+        history = cooldown_symbol_history.get(symbol, [])
+        normalized_history: list[tuple[pd.Period, float, float | None]] = []
+        for item in history:
+            if len(item) == 2:
+                prior_period, prior_return = item
+                normalized_history.append((prior_period, prior_return, None))
+            else:
+                prior_period, prior_return, prior_x1_share = item
+                normalized_history.append((prior_period, prior_return, prior_x1_share))
+        has_recent_high_return = any(
+            0 < (current_period - prior_period).n <= lookback_months
+            and prior_return >= return_threshold
+            and (
+                mode != "prior_high_return_x1_heavy_same_symbol_exclude"
+                or x1_share_threshold is None
+                or (prior_x1_share is not None and prior_x1_share >= x1_share_threshold)
+            )
+            for prior_period, prior_return, prior_x1_share in normalized_history
+        )
+        exclude_mask.append(has_recent_high_return)
+    exclude_mask = pd.Series(exclude_mask, index=ranked.index)
+    if not exclude_mask.any():
+        return ranked
+
+    return ranked.loc[~exclude_mask].copy()
+
+
 def _apply_x1_soft_penalty_rule(
     candidates: pd.DataFrame,
     config: BacktestConfig,
@@ -415,6 +481,46 @@ def _apply_x1_soft_penalty_rule(
         pd.to_numeric(result.loc[guard_mask, "selection_score"], errors="coerce") - penalty
     )
     return result
+
+
+def _record_symbol_cooldown_history(
+    cooldown_symbol_history: dict[str, list[tuple[pd.Period, float]]],
+    positions: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    plan_month: str,
+    buy_date,
+    sell_date,
+) -> None:
+    if positions.empty:
+        return
+    month_period = pd.Period(plan_month, freq="M")
+    for symbol in positions["symbol"].astype(str):
+        position_return = calculate_position_return_open_to_open(
+            prices,
+            symbol,
+            buy_date,
+            sell_date,
+            0.0,
+            0.0,
+        )
+        if position_return is None:
+            continue
+        history = cooldown_symbol_history.setdefault(symbol, [])
+        x1_value = pd.to_numeric(
+            positions.loc[positions["symbol"].astype(str) == symbol, "x1"],
+            errors="coerce",
+        )
+        x2_value = pd.to_numeric(
+            positions.loc[positions["symbol"].astype(str) == symbol, "x2"],
+            errors="coerce",
+        )
+        x1_share = None
+        if not x1_value.empty and not x2_value.empty:
+            denom = float(x1_value.iloc[0]) + float(x2_value.iloc[0])
+            if denom != 0:
+                x1_share = float(x1_value.iloc[0]) / denom
+        history.append((month_period, float(position_return["gross_return"]), x1_share))
 
 
 def _apply_earnings_quality_soft_penalty_rule(

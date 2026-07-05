@@ -38,6 +38,19 @@ class DataConfig(_Model):
     duckdb_path: Path
     price_preload_start: date | None = None
     financial_preload_start: date | None = None
+    refresh_group: str = "current"
+    primary_statement_source: str = "isyatirim"
+    statement_fallback_sources: list[str] = ["financial_fallback_registry"]
+    primary_announcement_source: str = "investing"
+    announcement_fallback_sources: list[str] = [
+        "issuer_ir",
+        "mkk_esirket",
+        "announcement_fallback_registry",
+    ]
+    queenstocks_username_env: str = "QUEENSTOCKS_USERNAME"
+    queenstocks_password_env: str = "QUEENSTOCKS_PASSWORD"
+    queenstocks_min_request_interval_seconds: float = 0.2
+    queenstocks_request_timeout_seconds: int = 30
 
 
 class UniverseConfig(_Model):
@@ -91,6 +104,10 @@ class StrategyConfig(_Model):
     earnings_quality_soft_penalty_amount: float = 0.0
     earnings_quality_weight_scale_mode: str | None = None
     earnings_quality_weight_scale_factor: float = 1.0
+    symbol_cooldown_exclusion_mode: str | None = None
+    symbol_cooldown_exclusion_lookback_months: int = 0
+    symbol_cooldown_exclusion_return_threshold: float = 0.0
+    symbol_cooldown_exclusion_x1_share_threshold: float | None = None
     symbol_cooldown_weight_scale_mode: str | None = None
     symbol_cooldown_lookback_months: int = 0
     symbol_cooldown_negative_return_threshold: float = 0.0

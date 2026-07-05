@@ -223,6 +223,7 @@ class IsYatirimFinancialLoader:
                     "is_consolidated": _coerce_bool(record.get("is_consolidated"), default=True),
                     "is_revised": _coerce_bool(record.get("is_revised"), default=False),
                     "source_url": record.get("source_url"),
+                    "source_system": str(record.get("source_system") or "isyatirim"),
                     "raw_hash": record.get("raw_hash"),
                     "created_at": _coerce_datetime(record.get("created_at")) or datetime.now(UTC),
                     "shares_outstanding": item_values["shares_outstanding"],

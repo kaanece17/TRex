@@ -170,6 +170,7 @@ class InvestingEarningsLoader:
                     "period_end": period_end,
                     "announcement_date": announcement_date,
                     "announcement_source_url": source_url,
+                    "announcement_source_system": "investing",
                 }
             )
         return records
@@ -225,6 +226,7 @@ class InvestingEarningsLoader:
                         "period_end": period_end,
                         "announcement_date": announcement_date,
                         "announcement_source_url": source_url,
+                        "announcement_source_system": "investing",
                     }
                 )
         return records
@@ -262,6 +264,10 @@ class InvestingEarningsLoader:
                         record.get("announcement_source_url"),
                         record.get("source_url"),
                     ),
+                    "announcement_source_system": _coalesce_value(
+                        record.get("announcement_source_system"),
+                        "investing",
+                    ),
                 }
             )
 
@@ -288,6 +294,8 @@ def merge_announcements_into_statements(
 
     if "announcement_source_url" not in merged.columns:
         merged["announcement_source_url"] = None
+    if "announcement_source_system" not in merged.columns:
+        merged["announcement_source_system"] = None
 
     updates_by_id = updates[updates["statement_id"].notna()].copy()
     if not updates_by_id.empty:
@@ -320,6 +328,7 @@ def _apply_update(statements: pd.DataFrame, index: int, update: dict, overwrite_
             return
     statements.at[index, "announcement_date"] = pd.Timestamp(update["announcement_date"])
     statements.at[index, "announcement_source_url"] = update.get("announcement_source_url")
+    statements.at[index, "announcement_source_system"] = update.get("announcement_source_system")
     announcement_datetime = update.get("announcement_datetime")
     if announcement_datetime is not None:
         statements.at[index, "announcement_datetime"] = pd.Timestamp(announcement_datetime)

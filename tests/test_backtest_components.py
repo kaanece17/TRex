@@ -7,6 +7,7 @@ from bist_factor_backtest.backtest.execution import calculate_position_return_op
 from bist_factor_backtest.backtest.monthly_rotation import (
     _apply_earnings_quality_soft_penalty_rule,
     _apply_earnings_quality_weight_scaling_rule,
+    _apply_symbol_cooldown_exclusion_rule,
     _apply_technical_confirmation_rule,
     _apply_x1_soft_penalty_rule,
 )
@@ -329,3 +330,92 @@ class TestX1SoftPenaltyRule:
         assert result["symbol"].tolist() == ["BBB", "CCC"]
         assert result["weight"].sum() == pytest.approx(1.0)
         assert result["weight"].tolist() == pytest.approx([0.5, 0.5])
+
+    def test_applySymbolCooldownExclusionRule_excludesPriorHighReturnSymbolForOneMonth(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "Europe/Istanbul"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {
+                    "name": "BIST_SANAYI",
+                    "source": "csv",
+                    "symbols_file": "symbols.csv",
+                },
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 5,
+                    "symbol_cooldown_exclusion_mode": "prior_high_return_same_symbol_exclude",
+                    "symbol_cooldown_exclusion_lookback_months": 1,
+                    "symbol_cooldown_exclusion_return_threshold": 0.40,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        ranked = pd.DataFrame(
+            [
+                {"symbol": "AAA", "selection_score": 3.0, "score": 3.0},
+                {"symbol": "BBB", "selection_score": 2.0, "score": 2.0},
+                {"symbol": "CCC", "selection_score": 1.0, "score": 1.0},
+            ]
+        )
+        cooldown_history = {
+            "AAA": [(pd.Period("2024-05", freq="M"), 0.45)],
+            "BBB": [(pd.Period("2024-05", freq="M"), 0.20)],
+        }
+
+        result = _apply_symbol_cooldown_exclusion_rule(
+            ranked,
+            config,
+            "2024-06",
+            cooldown_history,
+        )
+
+        assert result["symbol"].tolist() == ["BBB", "CCC"]
+
+    def test_applySymbolCooldownExclusionRule_x1HeavyMode_onlyExcludesHighX1History(self):
+        config = BacktestConfig.model_validate(
+            {
+                "project": {"name": "test", "timezone": "Europe/Istanbul"},
+                "data": {"storage": "duckdb", "duckdb_path": ":memory:"},
+                "universe": {
+                    "name": "BIST_SANAYI",
+                    "source": "csv",
+                    "symbols_file": "symbols.csv",
+                },
+                "point_in_time": {"cutoff_mode": "market_open", "if_only_date_available": "previous_day_only"},
+                "strategy": {
+                    "top_n": 5,
+                    "symbol_cooldown_exclusion_mode": "prior_high_return_x1_heavy_same_symbol_exclude",
+                    "symbol_cooldown_exclusion_lookback_months": 1,
+                    "symbol_cooldown_exclusion_return_threshold": 0.40,
+                    "symbol_cooldown_exclusion_x1_share_threshold": 0.80,
+                },
+                "scoring": {},
+                "costs": {},
+                "filters": {},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-12-31", "initial_capital": 100000},
+            }
+        )
+        ranked = pd.DataFrame(
+            [
+                {"symbol": "AAA", "selection_score": 3.0, "score": 3.0},
+                {"symbol": "BBB", "selection_score": 2.0, "score": 2.0},
+                {"symbol": "CCC", "selection_score": 1.0, "score": 1.0},
+            ]
+        )
+        cooldown_history = {
+            "AAA": [(pd.Period("2024-05", freq="M"), 0.45, 0.85)],
+            "BBB": [(pd.Period("2024-05", freq="M"), 0.45, 0.60)],
+        }
+
+        result = _apply_symbol_cooldown_exclusion_rule(
+            ranked,
+            config,
+            "2024-06",
+            cooldown_history,
+        )
+
+        assert result["symbol"].tolist() == ["BBB", "CCC"]

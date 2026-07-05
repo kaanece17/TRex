@@ -32,4 +32,14 @@ def active_dashboard_profiles() -> list[DashboardProfile]:
             label="Legacy Kabul Edilen Top6",
             config_path=root / "config.formula_research.yaml",
         ),
+        DashboardProfile(
+            id="cumhur",
+            label="Cumhur",
+            config_path=root / "config.formula_research_cumhur.yaml",
+        ),
+        DashboardProfile(
+            id="momentum_watchlist_queenstocks_shadow",
+            label="Kabul Edilen Ana Profil (QueenStocks Fallback Shadow)",
+            config_path=root / "config.formula_research_momentum_queenstocks_shadow.yaml",
+        ),
     ]

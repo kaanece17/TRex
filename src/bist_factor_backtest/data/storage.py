@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS financial_statements (
     is_consolidated BOOLEAN,
     is_revised BOOLEAN,
     source_url TEXT,
+    source_system TEXT,
     announcement_source_url TEXT,
+    announcement_source_system TEXT,
     raw_hash TEXT,
     created_at TIMESTAMP,
     shares_outstanding DOUBLE,
@@ -71,7 +73,9 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     firm_value DOUBLE,
     source_statement_id TEXT,
     source_url TEXT,
+    source_system TEXT,
     announcement_source_url TEXT,
+    announcement_source_system TEXT,
     raw_hash TEXT
 );
 
@@ -235,9 +239,17 @@ class DuckDbStorage:
         statement_columns = self.connection.execute("PRAGMA table_info('financial_statements')").df()["name"].tolist()
         if "announcement_source_url" not in statement_columns:
             self.connection.execute("ALTER TABLE financial_statements ADD COLUMN announcement_source_url TEXT")
+        if "source_system" not in statement_columns:
+            self.connection.execute("ALTER TABLE financial_statements ADD COLUMN source_system TEXT")
+        if "announcement_source_system" not in statement_columns:
+            self.connection.execute("ALTER TABLE financial_statements ADD COLUMN announcement_source_system TEXT")
         snapshot_columns = self.connection.execute("PRAGMA table_info('financial_snapshots')").df()["name"].tolist()
         if "announcement_source_url" not in snapshot_columns:
             self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN announcement_source_url TEXT")
+        if "source_system" not in snapshot_columns:
+            self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN source_system TEXT")
+        if "announcement_source_system" not in snapshot_columns:
+            self.connection.execute("ALTER TABLE financial_snapshots ADD COLUMN announcement_source_system TEXT")
         self._ensure_text_column_type(
             table="financial_statements",
             columns=["statement_id", "raw_hash"],

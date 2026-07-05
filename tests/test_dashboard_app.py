@@ -91,6 +91,46 @@ class TestDashboardApp:
                     "repeat_count": 4,
                     "avg_net_return": 0.11,
                     "win_rate": 0.75,
+                },
+                {
+                    "month": "2026-05",
+                    "symbol": "GUBRF",
+                    "score": 0.56,
+                    "selection_score": 0.46,
+                    "x1": 0.51,
+                    "x2": 0.05,
+                    "x1_share": 0.9037,
+                    "x2_share": 0.0963,
+                    "net_income_growth": 5.4069,
+                    "equity": 100,
+                    "operating_profit_ttm": 50,
+                    "firm_value": 400,
+                    "used_period_end": "2026-03-31",
+                    "used_announcement_date": "2026-04-09",
+                    "confidence_level": "winner",
+                    "repeat_count": 4,
+                    "avg_net_return": 0.11,
+                    "win_rate": 0.75,
+                },
+                {
+                    "month": "2026-05",
+                    "symbol": "ASTOR",
+                    "score": 0.52,
+                    "selection_score": 0.52,
+                    "x1": 0.49,
+                    "x2": 0.03,
+                    "x1_share": 0.9496,
+                    "x2_share": 0.0504,
+                    "net_income_growth": 0.9565,
+                    "equity": 100,
+                    "operating_profit_ttm": 50,
+                    "firm_value": 400,
+                    "used_period_end": "2026-03-31",
+                    "used_announcement_date": "2026-04-09",
+                    "confidence_level": "neutral",
+                    "repeat_count": 2,
+                    "avg_net_return": 0.02,
+                    "win_rate": 0.5,
                 }
             ],
             "missing_financials.json": [
@@ -184,6 +224,10 @@ class TestDashboardApp:
         assert positions.status_code == 200
         assert "Bu liste ay sonu kapanisina gore uretilen sonraki ay preview listesidir." in positions.text
         assert "Son Job Basarisiz" in positions.text
+
+        current_positions = client.get("/positions?config=accepted_top6&year=2026&month=05")
+        assert current_positions.status_code == 200
+        assert current_positions.text.index("ASTOR") < current_positions.text.index("GUBRF")
 
         missing = client.get("/missing-financials?config=accepted_top6&year=2026&month=05")
         assert missing.status_code == 200

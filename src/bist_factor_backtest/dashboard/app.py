@@ -86,6 +86,14 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
                 return row
         return {}
 
+    def monthly_result_for_month(profile_data: dict[str, object], month: str | None) -> dict[str, object]:
+        if month is None:
+            return {}
+        for row in profile_data.get("monthly_returns", []):
+            if row.get("month") == month:
+                return row
+        return {}
+
     @app.get("/health")
     def health() -> JSONResponse:
         return JSONResponse({"ok": True})
@@ -133,6 +141,7 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
         profile_data = load_profile_data(profile_id) if profile_id else {}
         preview_month = profile_data.get("summary", {}).get("preview_month")
         current_month = profile_data.get("summary", {}).get("current_month")
+        latest_selected_month = profile_data.get("summary", {}).get("latest_selected_month")
         display_month = preview_month or current_month
         if preview_month and profile_data.get("next_month_preview"):
             current_positions = profile_data.get("next_month_preview", [])
@@ -144,8 +153,9 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
                 if row.get("month") == current_month
             ]
             current_positions = _dedupe_positions_for_open_month(current_positions, current_month)
-            current_alerts = profile_data.get("current_month_alerts", [])
-            current_stale_bases = profile_data.get("current_month_stale_bases", [])
+        current_positions = _sort_positions_for_display(current_positions)
+        current_alerts = profile_data.get("current_month_alerts", [])
+        current_stale_bases = profile_data.get("current_month_stale_bases", [])
         return templates.TemplateResponse(
             request,
             "home.html",
@@ -157,6 +167,8 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
                 "current_alerts": current_alerts,
                 "current_stale_bases": current_stale_bases,
                 "current_regime": regime_for_month(profile_data, display_month),
+                "open_month_result": monthly_result_for_month(profile_data, current_month),
+                "closed_month_result": monthly_result_for_month(profile_data, latest_selected_month),
                 "refresh_status": load_refresh_status(),
             },
         )
@@ -189,6 +201,7 @@ def create_app(settings: AdminSettings | None = None) -> FastAPI:
             positions_for_month = [row for row in all_positions if row.get("month") == target]
         if target == profile_data.get("summary", {}).get("current_month"):
             positions_for_month = _dedupe_positions_for_open_month(positions_for_month, target)
+        positions_for_month = _sort_positions_for_display(positions_for_month)
         latest_data_month = profile_data.get("summary", {}).get("latest_data_month") or profile_data.get("summary", {}).get("current_month")
         if preview_month and target == preview_month:
             current_alerts = profile_data.get("next_month_preview_alerts", [])
@@ -339,7 +352,28 @@ def _dedupe_positions_for_open_month(rows: list[dict], month: str | None) -> lis
         chosen["gross_return"] = None
         chosen["sell_price"] = None
         resolved.append(chosen)
-    return sorted(resolved, key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")))
+    return _sort_positions_for_display(resolved)
+
+
+def _sort_positions_for_display(rows: list[dict]) -> list[dict]:
+    def _as_float(value: object) -> float:
+        if value is None:
+            return float("-inf")
+        try:
+            if isinstance(value, str) and not value.strip():
+                return float("-inf")
+            return float(value)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            -_as_float(row.get("selection_score")),
+            -_as_float(row.get("score")),
+            str(row.get("symbol") or ""),
+        ),
+    )
 
 
 def _confidence_label(value: object) -> str:

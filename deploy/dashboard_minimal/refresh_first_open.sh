@@ -114,9 +114,15 @@ write_status "running" "Ay basi sabah refresh calisiyor."
     write_status "skipped" "Bu ay icin sabah refresh zaten tamamlanmis, tekrar calistirilmadi."
     exit 0
   fi
+  TRADE_DATE=$(TZ=Europe/Istanbul date +%F)
+  run /opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli capture-first-open-prices \
+    --config /opt/trex-dashboard/config.formula_research_momentum.yaml \
+    --trade-date "$TRADE_DATE"
   run /opt/trex-dashboard/.venv/bin/python -m bist_factor_backtest.cli refresh-dashboard \
     --output-dir /opt/trex-dashboard/data/dashboard \
-    --registry-file /opt/trex-dashboard/data/universe/bist_sanayi_investing_registry.csv
+    --registry-file /opt/trex-dashboard/data/universe/bist_sanayi_investing_registry.csv \
+    --skip-price-load \
+    --skip-network-loaders
   mark_completed_month
   cleanup_logs
   echo "[$(date -u)] month-start refresh done"
