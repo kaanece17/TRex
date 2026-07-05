@@ -51,6 +51,9 @@ class DataConfig(_Model):
     queenstocks_password_env: str = "QUEENSTOCKS_PASSWORD"
     queenstocks_min_request_interval_seconds: float = 0.2
     queenstocks_request_timeout_seconds: int = 30
+    fintables_post_verify_enabled: bool = False
+    fintables_request_timeout_seconds: int = 30
+    fintables_min_request_interval_seconds: float = 0.2
 
 
 class UniverseConfig(_Model):

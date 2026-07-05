@@ -7,6 +7,7 @@ data:
   duckdb_path: data/bist_backtest.duckdb
   price_preload_start: "2019-12-01"
   financial_preload_start: "2018-01-01"
+  fintables_post_verify_enabled: true
 
 universe:
   name: BIST_SANAYI

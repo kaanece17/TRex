@@ -30,6 +30,10 @@ from bist_factor_backtest.data.coverage_audit import (
     summarize_alternative_coverage,
 )
 from bist_factor_backtest.data.earnings_investing import InvestingEarningsLoader, merge_announcements_into_statements
+from bist_factor_backtest.data.fintables import (
+    FintablesClient,
+    FintablesFinancialLoader,
+)
 from bist_factor_backtest.data.financials_fallback_registry import (
     FinancialFallbackRegistryLoader,
     load_financial_fallback_registry,
@@ -958,6 +962,43 @@ def load_announcement_dates_fallback_registry(
 
 
 @app.command()
+def audit_fintables_latest_verify(
+    config: Path = Path("config.yaml"),
+    output: Path = Path("reports/fintables_latest_verify.csv"),
+    symbols: str | None = None,
+) -> None:
+    audit, summary = _run_fintables_latest_verify(config=config, symbols=symbols, apply_fixes=False)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    audit.to_csv(output, index=False)
+    typer.echo(
+        f"fintables_verify rows={len(audit)} "
+        f"statement_missing={summary.get('statement_missing', 0)} "
+        f"announcement_missing={summary.get('missing_announcement_date', 0)} "
+        f"net_income_mismatch={summary.get('net_income_mismatch', 0)} "
+        f"output={output}"
+    )
+
+
+@app.command()
+def apply_fintables_latest_fallbacks(
+    config: Path = Path("config.yaml"),
+    output: Path = Path("reports/fintables_latest_verify.csv"),
+    symbols: str | None = None,
+) -> None:
+    audit, summary = _run_fintables_latest_verify(config=config, symbols=symbols, apply_fixes=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    audit.to_csv(output, index=False)
+    typer.echo(
+        f"fintables_apply rows={len(audit)} "
+        f"statement_missing={summary.get('statement_missing', 0)} "
+        f"announcement_missing={summary.get('missing_announcement_date', 0)} "
+        f"statement_filled={summary.get('statement_filled', 0)} "
+        f"announcement_filled={summary.get('announcement_filled', 0)} "
+        f"output={output}"
+    )
+
+
+@app.command()
 def audit_listing_gap_classification(
     config: Path = Path("config.yaml"),
     listing_dates_file: Path = Path("data/universe/bist_sanayi_listing_dates.csv"),
@@ -1428,6 +1469,10 @@ def _compose_dashboard_result(
         preview_selected = preview_result["selected_positions"].copy()
         historical_monthly = historical_monthly[historical_monthly["month"].astype(str) < str(open_month)].copy()
         preview_monthly = preview_monthly[preview_monthly["month"].astype(str) >= str(open_month)].copy()
+        preview_monthly = _rebase_preview_monthly_results(
+            historical_monthly,
+            preview_monthly,
+        )
         historical_selected = historical_selected[historical_selected["month"].astype(str) < str(open_month)].copy()
         preview_selected = preview_selected[preview_selected["month"].astype(str) >= str(open_month)].copy()
         composed["monthly_results"] = pd.concat([historical_monthly, preview_monthly], ignore_index=True, sort=False)
@@ -1436,6 +1481,31 @@ def _compose_dashboard_result(
         composed["monthly_results"] = historical_result["monthly_results"]
         composed["selected_positions"] = historical_result["selected_positions"]
     return composed
+
+
+def _rebase_preview_monthly_results(
+    historical_monthly: pd.DataFrame,
+    preview_monthly: pd.DataFrame,
+) -> pd.DataFrame:
+    if preview_monthly.empty:
+        return preview_monthly
+    if historical_monthly.empty:
+        return preview_monthly
+    if "portfolio_value_end" not in historical_monthly.columns or "net_return" not in preview_monthly.columns:
+        return preview_monthly
+    rebased = preview_monthly.copy().sort_values("month").reset_index(drop=True)
+    current_value = pd.to_numeric(historical_monthly["portfolio_value_end"], errors="coerce").dropna()
+    if current_value.empty:
+        return preview_monthly
+    running_value = float(current_value.iloc[-1])
+    for index, net_return in enumerate(pd.to_numeric(rebased["net_return"], errors="coerce")):
+        rebased.at[index, "portfolio_value_start"] = running_value
+        if pd.isna(net_return):
+            rebased.at[index, "portfolio_value_end"] = running_value
+            continue
+        running_value = running_value * (1 + float(net_return))
+        rebased.at[index, "portfolio_value_end"] = running_value
+    return rebased
 
 
 def _run_kap_preflight(retries: int, request_timeout_seconds: int) -> None:
@@ -1971,6 +2041,229 @@ def _build_queenstocks_client(settings) -> QueenStocksClient:
     )
 
 
+def _build_fintables_client(settings) -> FintablesClient:
+    return FintablesClient(
+        request_timeout_seconds=settings.data.fintables_request_timeout_seconds,
+        min_request_interval_seconds=settings.data.fintables_min_request_interval_seconds,
+    )
+
+
+def _run_fintables_latest_verify(
+    *,
+    config: Path,
+    symbols: str | None,
+    apply_fixes: bool,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    settings = load_config(config)
+    target_symbols = (
+        _parse_symbol_csv(symbols)
+        if symbols is not None and symbols.strip()
+        else load_static_universe(settings.universe.symbols_file, settings.universe.symbol_aliases_file)
+    )
+    storage = DuckDbStorage(settings.data.duckdb_path)
+    storage.initialize()
+    statements = storage.read_table("financial_statements")
+    items = storage.read_table("financial_statement_items")
+    aliases = (
+        load_symbol_aliases(settings.universe.symbol_aliases_file)
+        if settings.universe.symbol_aliases_file is not None and settings.universe.symbol_aliases_file.exists()
+        else pd.DataFrame()
+    )
+    candidates = _prepare_financial_snapshot_candidates(statements, items, aliases)
+    latest_system = _latest_snapshot_candidate_rows_by_symbol(candidates, target_symbols)
+    client = _build_fintables_client(settings)
+    screener = client.fetch_latest_screener_rows(target_symbols)
+    screener_map = {
+        str(row["symbol"]).upper(): row
+        for row in screener.to_dict(orient="records")
+        if str(row.get("symbol") or "").strip()
+    }
+
+    audit_rows: list[dict] = []
+    announcement_updates: list[dict] = []
+    statement_rows: list[dict] = []
+    item_rows: list[dict] = []
+    failures: list[dict] = []
+    statement_loader = FintablesFinancialLoader()
+    summary = {
+        "statement_missing": 0,
+        "missing_announcement_date": 0,
+        "net_income_mismatch": 0,
+        "statement_filled": 0,
+        "announcement_filled": 0,
+        "statement_fill_blocked": 0,
+    }
+
+    for symbol in target_symbols:
+        system_row = latest_system.get(symbol)
+        fintables_row = screener_map.get(symbol)
+        if fintables_row is None:
+            audit_rows.append(
+                {
+                    "symbol": symbol,
+                    "status": "not_in_fintables",
+                    "fintables_period_end": None,
+                    "fintables_published_at": None,
+                    "fintables_net_income": None,
+                    "system_period_end": _date_to_iso(system_row.get("period_end")) if system_row is not None else None,
+                    "system_announcement_date": _date_to_iso(system_row.get("announcement_date")) if system_row is not None else None,
+                    "system_net_income": system_row.get("net_income") if system_row is not None else None,
+                }
+            )
+            continue
+
+        fintables_period = fintables_row["period_end"]
+        system_period = system_row.get("period_end") if system_row is not None else None
+        system_announcement_date = system_row.get("announcement_date") if system_row is not None else None
+        system_net_income = system_row.get("net_income") if system_row is not None else None
+        status = "match"
+
+        if system_period is None or system_period < fintables_period:
+            status = "statement_missing"
+            summary["statement_missing"] += 1
+            if apply_fixes:
+                try:
+                    parsed_records = client.fetch_statement_records(symbol)
+                    matching_records = [record for record in parsed_records if record.get("period_end") == fintables_period]
+                    blocked_fill = False
+                    result = None
+                    if matching_records:
+                        parsed_net_income = pd.to_numeric(matching_records[0].get("net_income"), errors="coerce")
+                        fintables_net_income = pd.to_numeric(fintables_row.get("net_income"), errors="coerce")
+                        if pd.notna(parsed_net_income) and pd.notna(fintables_net_income):
+                            baseline = max(abs(float(fintables_net_income)), 1.0)
+                            relative_gap = abs(float(parsed_net_income) - float(fintables_net_income)) / baseline
+                            if relative_gap > 0.05:
+                                summary["statement_fill_blocked"] += 1
+                                blocked_fill = True
+                                failures.append(
+                                    {
+                                        "symbol": symbol,
+                                        "reason": "fintables_statement_net_income_mismatch",
+                                        "detail": (
+                                            f"period={fintables_period.isoformat()} "
+                                            f"screener={float(fintables_net_income)} parsed={float(parsed_net_income)}"
+                                        ),
+                                    }
+                                )
+                                matching_records = []
+                        if matching_records:
+                            matching_records[0]["announcement_date"] = fintables_row.get("announcement_date")
+                            matching_records[0]["announcement_datetime"] = fintables_row.get("announcement_datetime")
+                            matching_records[0]["announcement_source_url"] = fintables_row.get("announcement_source_url")
+                            matching_records[0]["announcement_source_system"] = fintables_row.get("announcement_source_system")
+                            result = statement_loader.build_from_records(symbol, matching_records[:1])
+                        if result is not None and not result.statements.empty:
+                            statement_rows.extend(result.statements.to_dict(orient="records"))
+                            item_rows.extend(result.items.to_dict(orient="records"))
+                            summary["statement_filled"] += 1
+                        if result is not None and not result.failures.empty:
+                            failures.extend(result.failures.to_dict(orient="records"))
+                    if not matching_records and not blocked_fill:
+                        failures.append(
+                            {
+                                "symbol": symbol,
+                                "reason": "fintables_period_not_found_in_statement_pages",
+                                "detail": fintables_period.isoformat(),
+                            }
+                        )
+                except Exception as error:
+                    failures.append(
+                        {"symbol": symbol, "reason": "fintables_statement_fetch_failed", "detail": str(error)}
+                    )
+        elif pd.isna(system_announcement_date) and system_period == fintables_period:
+            status = "missing_announcement_date"
+            summary["missing_announcement_date"] += 1
+            if apply_fixes:
+                announcement_updates.append(
+                    {
+                        "statement_id": None,
+                        "symbol": symbol,
+                        "period_end": fintables_period,
+                        "announcement_date": fintables_row.get("announcement_date"),
+                        "announcement_datetime": fintables_row.get("announcement_datetime"),
+                        "announcement_source_url": fintables_row.get("announcement_source_url"),
+                        "announcement_source_system": fintables_row.get("announcement_source_system"),
+                    }
+                )
+                summary["announcement_filled"] += 1
+        elif system_period == fintables_period and pd.notna(system_net_income) and pd.notna(fintables_row.get("net_income")):
+            if abs(float(system_net_income) - float(fintables_row["net_income"])) > 0.5:
+                status = "net_income_mismatch"
+                summary["net_income_mismatch"] += 1
+
+        audit_rows.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "fintables_period_end": _date_to_iso(fintables_period),
+                "fintables_published_at": _date_to_iso(fintables_row.get("announcement_date")),
+                "fintables_net_income": fintables_row.get("net_income"),
+                "system_period_end": _date_to_iso(system_period),
+                "system_announcement_date": _date_to_iso(system_announcement_date),
+                "system_net_income": system_net_income,
+            }
+        )
+
+    if apply_fixes:
+        if statement_rows:
+            statement_df = pd.DataFrame(statement_rows)
+            items_df = pd.DataFrame(item_rows)
+            _upsert_statements(storage, statement_df)
+            _replace_items_for_statements(storage, items_df)
+        if announcement_updates:
+            updates_df = pd.DataFrame(announcement_updates)
+            merged = merge_announcements_into_statements(statements, updates_df, overwrite_existing=False)
+            changed = merged[
+                merged["symbol"].astype(str).str.upper().isin({row["symbol"] for row in announcement_updates})
+                & merged["announcement_date"].notna()
+            ].copy()
+            if not changed.empty:
+                _upsert_statements(storage, changed)
+    storage.close()
+
+    audit = pd.DataFrame(audit_rows)
+    if failures:
+        failure_df = pd.DataFrame(failures)
+        if audit.empty:
+            audit = failure_df
+        else:
+            audit = audit.merge(
+                failure_df.groupby("symbol")["reason"].agg(lambda values: ",".join(sorted(set(values)))).reset_index(),
+                on="symbol",
+                how="left",
+            )
+    return audit, summary
+
+
+def _latest_snapshot_candidate_rows_by_symbol(candidates: pd.DataFrame, symbols: list[str]) -> dict[str, dict]:
+    if candidates.empty:
+        return {}
+    filtered = candidates[candidates["symbol"].astype(str).str.upper().isin(set(symbols))].copy()
+    if filtered.empty:
+        return {}
+    filtered["period_end"] = pd.to_datetime(filtered["period_end"], errors="coerce").dt.date
+    filtered["announcement_date"] = pd.to_datetime(filtered.get("announcement_date"), errors="coerce").dt.date
+    filtered["net_income"] = pd.to_numeric(filtered.get("net_income"), errors="coerce")
+    filtered = filtered.sort_values(
+        ["period_end", "announcement_date", "statement_id"],
+        ascending=[False, False, True],
+        na_position="last",
+    )
+    latest: dict[str, dict] = {}
+    for row in filtered.to_dict(orient="records"):
+        symbol = str(row.get("symbol") or "").upper()
+        latest.setdefault(symbol, row)
+    return latest
+
+
+def _date_to_iso(value) -> str | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date().isoformat()
+
+
 def _resolve_queenstocks_target_symbols(
     settings,
     *,
@@ -2358,6 +2651,7 @@ def _group_active_profiles_by_refresh_group() -> list[dict]:
             settings.universe.membership_file,
             tuple(_statement_source_order(settings.data)),
             tuple(_announcement_source_order(settings.data)),
+            bool(settings.data.fintables_post_verify_enabled),
         )
         if refresh_group not in groups:
             groups[refresh_group] = {
@@ -2404,6 +2698,20 @@ def _run_refresh_group(
             except Exception as error:
                 typer.echo(
                     f"[refresh-group:{settings.data.refresh_group}] announcement_source_failed={source} error={error}"
+                )
+        if settings.data.fintables_post_verify_enabled:
+            try:
+                _, summary = _run_fintables_latest_verify(config=config_path, symbols=None, apply_fixes=True)
+                typer.echo(
+                    f"[refresh-group:{settings.data.refresh_group}] fintables_verify_ok "
+                    f"statement_missing={summary.get('statement_missing', 0)} "
+                    f"announcement_missing={summary.get('missing_announcement_date', 0)} "
+                    f"statement_filled={summary.get('statement_filled', 0)} "
+                    f"announcement_filled={summary.get('announcement_filled', 0)}"
+                )
+            except Exception as error:
+                typer.echo(
+                    f"[refresh-group:{settings.data.refresh_group}] fintables_verify_failed error={error}"
                 )
     build_snapshots(config_path)
 
