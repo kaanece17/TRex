@@ -131,6 +131,12 @@ def build_profile_dashboard_dataset(
     ):
         current_open_month = str(latest_market_month)
 
+    summary_latest_data_month_closed = latest_month_is_closed
+    if current_open_month is not None and not monthly_results.empty:
+        latest_realized_month = str(monthly_results["month"].iloc[-1])
+        if latest_realized_month < current_open_month:
+            summary_latest_data_month_closed = True
+
     open_display_month = (
         str(monthly_results["month"].iloc[-1])
         if not monthly_results.empty and not latest_month_is_closed and current_open_month is None
@@ -152,7 +158,7 @@ def build_profile_dashboard_dataset(
         monthly_regimes,
         preview_available=bool(preview_month),
         preview_positions=preview_with_confidence,
-        latest_data_month_closed=latest_month_is_closed,
+        latest_data_month_closed=summary_latest_data_month_closed,
         current_open_month=current_open_month,
     )
     current_month_alerts = build_current_month_alerts(missing_financials, summary["current_month"])

@@ -1759,6 +1759,7 @@ def build_dashboard(
     statuses = []
     root = dashboard_root(output_dir)
     for profile in active_dashboard_profiles():
+        storage = None
         try:
             settings = load_config(profile.config_path)
             storage = DuckDbStorage(settings.data.duckdb_path)
@@ -1784,7 +1785,6 @@ def build_dashboard(
                 )
             preview_result = run_monthly_rotation_backtest(settings, prices, financials, membership)
             result = _compose_dashboard_result(historical_result, preview_result)
-            storage.close()
             statuses.append(
                 build_profile_dashboard_dataset(
                     root,
@@ -1798,6 +1798,12 @@ def build_dashboard(
             )
         except Exception as error:
             statuses.append(empty_status(profile, str(error)))
+        finally:
+            if storage is not None:
+                try:
+                    storage.close()
+                except Exception:
+                    pass
     write_dashboard_manifest(root, statuses)
     typer.echo(str(root / "manifest.json"))
 

@@ -148,6 +148,91 @@ class TestDashboardDatasets:
         assert summary["metrics_through_month"] == "2026-06"
         assert summary["open_month_excluded_from_metrics"] is False
 
+    def test_buildProfileDashboardDataset_treats_latest_realized_month_as_closed_when_current_open_month_exists(self, tmp_path):
+        config = BacktestConfig(
+            project=ProjectConfig(name="test", timezone="Europe/Istanbul"),
+            data=DataConfig(duckdb_path=Path("dummy.duckdb")),
+            universe=UniverseConfig(symbols_file=Path("symbols.csv"), membership_file=Path("membership.csv"), name="BIST_SANAYI"),
+            point_in_time=PointInTimeConfig(),
+            strategy=StrategyConfig(execution_mode="rebalance_open_to_open"),
+            scoring=ScoringConfig(),
+            costs=CostsConfig(),
+            filters=FiltersConfig(),
+            backtest=BacktestRangeConfig(start_date=pd.Timestamp("2026-01-01").date(), end_date=pd.Timestamp("2026-12-31").date(), initial_capital=100000.0),
+        )
+        result = {
+            "run_id": "run-1",
+            "monthly_results": pd.DataFrame(
+                [
+                    {"month": "2026-05", "net_return": 0.10, "portfolio_value_start": 100000.0, "portfolio_value_end": 110000.0},
+                    {"month": "2026-06", "net_return": -0.05, "portfolio_value_start": 110000.0, "portfolio_value_end": 104500.0},
+                ]
+            ),
+            "selected_positions": pd.DataFrame(
+                [
+                    {"month": "2026-05", "symbol": "AAA", "fiscal_year": 2025, "fiscal_quarter": 4, "buy_date": "2026-05-04", "used_announcement_datetime": "2026-03-01T00:00:00", "net_return": 0.10},
+                    {"month": "2026-06", "symbol": "BBB", "fiscal_year": 2026, "fiscal_quarter": 1, "buy_date": "2026-06-01", "used_announcement_datetime": "2026-05-11T00:00:00", "net_return": -0.05},
+                ]
+            ),
+            "planned_positions": pd.DataFrame(
+                [
+                    {"month": "2026-05", "symbol": "AAA", "fiscal_year": 2025, "fiscal_quarter": 4, "buy_date": "2026-05-04", "used_announcement_datetime": "2026-03-01T00:00:00"},
+                    {"month": "2026-06", "symbol": "BBB", "fiscal_year": 2026, "fiscal_quarter": 1, "buy_date": "2026-06-01", "used_announcement_datetime": "2026-05-11T00:00:00"},
+                    {"month": "2026-07", "symbol": "CCC", "fiscal_year": 2026, "fiscal_quarter": 1, "buy_date": "2026-07-01", "sell_date": "2026-07-03", "used_announcement_datetime": "2026-05-11T00:00:00"},
+                ]
+            ),
+            "rejected_candidates": pd.DataFrame(),
+            "candidate_diagnostics": pd.DataFrame(),
+        }
+        prices = pd.DataFrame(
+            [
+                {"symbol": "AAA", "date": "2026-06-30", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+                {"symbol": "AAA", "date": "2026-07-03", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+                {"symbol": "BBB", "date": "2026-06-30", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+                {"symbol": "BBB", "date": "2026-07-03", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+                {"symbol": "CCC", "date": "2026-06-30", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+                {"symbol": "CCC", "date": "2026-07-03", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "adjusted_close": 10.0, "volume": 1000},
+            ]
+        )
+        membership = pd.DataFrame(
+            [
+                {"symbol": "AAA", "universe_name": "BIST_SANAYI", "start_date": pd.Timestamp("2020-01-01").date(), "end_date": pd.NaT},
+                {"symbol": "BBB", "universe_name": "BIST_SANAYI", "start_date": pd.Timestamp("2020-01-01").date(), "end_date": pd.NaT},
+                {"symbol": "CCC", "universe_name": "BIST_SANAYI", "start_date": pd.Timestamp("2020-01-01").date(), "end_date": pd.NaT},
+            ]
+        )
+        financials = pd.DataFrame(
+            [
+                {"symbol": "AAA", "period_end": "2025-12-01", "announcement_datetime": "2026-03-01T00:00:00"},
+                {"symbol": "BBB", "period_end": "2026-03-01", "announcement_datetime": "2026-05-11T00:00:00"},
+                {"symbol": "CCC", "period_end": "2026-03-01", "announcement_datetime": "2026-05-11T00:00:00"},
+            ]
+        )
+
+        from bist_factor_backtest.dashboard.datasets import build_profile_dashboard_dataset
+        from bist_factor_backtest.dashboard.profiles import DashboardProfile
+
+        status = build_profile_dashboard_dataset(
+            tmp_path,
+            DashboardProfile(
+                id="momentum_watchlist",
+                label="Accepted",
+                config_path=Path("config.yaml"),
+                active=True,
+            ),
+            config,
+            result,
+            prices=prices,
+            membership=membership,
+            financial_snapshots=financials,
+        )
+
+        summary = __import__("json").loads((tmp_path / "momentum_watchlist" / "summary.json").read_text())
+        assert status.refresh_status == "success"
+        assert summary["latest_selected_month"] == "2026-06"
+        assert summary["metrics_through_month"] == "2026-06"
+        assert summary["current_month"] == "2026-07"
+
     def test_buildDisplayPositions_keepsRealizedRowsWhenLatestMonthAlreadyClosed(self):
         planned_positions = pd.DataFrame([{"month": "2026-06", "symbol": "BBB"}])
         realized_positions = pd.DataFrame(
