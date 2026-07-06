@@ -64,6 +64,8 @@ def run_monthly_rotation_backtest(
     cooldown_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
 
     for month_index, month in enumerate(months):
+        if config.strategy.execution_mode == "rebalance_open_to_open" and month_index + 1 >= len(months):
+            break
         buy_date = get_first_trading_day(calendar_prices, month)
         sell_date = _resolve_sell_date(
             calendar_prices,

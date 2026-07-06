@@ -1335,7 +1335,12 @@ def _load_existing_dashboard_run_id(root: Path, profile_id: str) -> str | None:
     return str(run_id) if run_id else None
 
 
-def _load_artifact_backtest_result(root: Path, profile_id: str) -> dict | None:
+def _load_artifact_backtest_result(
+    root: Path,
+    profile_id: str,
+    *,
+    execution_mode: str | None = None,
+) -> dict | None:
     profile_root = root / profile_id
     summary_path = profile_root / "summary.json"
     monthly_returns_path = profile_root / "monthly_returns.json"
@@ -1359,7 +1364,10 @@ def _load_artifact_backtest_result(root: Path, profile_id: str) -> dict | None:
     if not run_id:
         return None
     open_month = str(summary.get("current_month")) if summary.get("open_month_excluded_from_metrics") else None
-    unresolved_month = _detect_earliest_unresolved_month(selected_positions)
+    unresolved_month = _detect_earliest_unresolved_month(
+        selected_positions,
+        execution_mode=execution_mode,
+    )
     if unresolved_month is not None:
         if open_month is None or str(unresolved_month) < str(open_month):
             open_month = str(unresolved_month)
@@ -1375,7 +1383,11 @@ def _load_artifact_backtest_result(root: Path, profile_id: str) -> dict | None:
     }
 
 
-def _detect_earliest_unresolved_month(selected_positions: pd.DataFrame) -> str | None:
+def _detect_earliest_unresolved_month(
+    selected_positions: pd.DataFrame,
+    *,
+    execution_mode: str | None = None,
+) -> str | None:
     if selected_positions.empty or "month" not in selected_positions.columns:
         return None
     unresolved_masks: list[pd.Series] = []
@@ -1384,6 +1396,19 @@ def _detect_earliest_unresolved_month(selected_positions: pd.DataFrame) -> str |
             unresolved_masks.append(selected_positions[column].isna())
     if "reason" in selected_positions.columns:
         unresolved_masks.append(selected_positions["reason"].notna())
+    if execution_mode == "rebalance_open_to_open" and {
+        "month",
+        "buy_date",
+        "sell_date",
+    }.issubset(selected_positions.columns):
+        buy_month = pd.to_datetime(selected_positions["buy_date"], errors="coerce").dt.strftime("%Y-%m")
+        sell_month = pd.to_datetime(selected_positions["sell_date"], errors="coerce").dt.strftime("%Y-%m")
+        row_month = selected_positions["month"].astype(str)
+        unresolved_masks.append(
+            buy_month.eq(row_month)
+            & sell_month.eq(row_month)
+            & pd.to_datetime(selected_positions["sell_date"], errors="coerce").notna()
+        )
     if not unresolved_masks:
         return None
     unresolved_mask = unresolved_masks[0].copy()
@@ -1396,7 +1421,12 @@ def _detect_earliest_unresolved_month(selected_positions: pd.DataFrame) -> str |
     return months[0] if months else None
 
 
-def _load_backtest_result_for_run(storage: DuckDbStorage, run_id: str) -> dict | None:
+def _load_backtest_result_for_run(
+    storage: DuckDbStorage,
+    run_id: str,
+    *,
+    execution_mode: str | None = None,
+) -> dict | None:
     run_meta = storage.connection.execute(
         """
         SELECT run_id, created_at
@@ -1430,7 +1460,10 @@ def _load_backtest_result_for_run(storage: DuckDbStorage, run_id: str) -> dict |
     created_at = datetime.now(UTC)
     if not run_meta.empty and pd.notna(run_meta.loc[0, "created_at"]):
         created_at = pd.to_datetime(run_meta.loc[0, "created_at"]).to_pydatetime()
-    open_month = _detect_earliest_unresolved_month(selected_positions)
+    open_month = _detect_earliest_unresolved_month(
+        selected_positions,
+        execution_mode=execution_mode,
+    )
     if open_month is None and not monthly_results.empty and "month" in monthly_results.columns:
         unresolved_monthly = monthly_results[
             monthly_results["net_return"].isna()
@@ -1735,12 +1768,20 @@ def build_dashboard(
             membership = _load_membership_for_run(settings)
             existing_run_id = _load_existing_dashboard_run_id(root, profile.id)
             historical_result = (
-                _load_backtest_result_for_run(storage, existing_run_id)
+                _load_backtest_result_for_run(
+                    storage,
+                    existing_run_id,
+                    execution_mode=settings.strategy.execution_mode,
+                )
                 if existing_run_id is not None
                 else None
             )
             if historical_result is None:
-                historical_result = _load_artifact_backtest_result(root, profile.id)
+                historical_result = _load_artifact_backtest_result(
+                    root,
+                    profile.id,
+                    execution_mode=settings.strategy.execution_mode,
+                )
             preview_result = run_monthly_rotation_backtest(settings, prices, financials, membership)
             result = _compose_dashboard_result(historical_result, preview_result)
             storage.close()
