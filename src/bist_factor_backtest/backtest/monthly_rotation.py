@@ -64,8 +64,10 @@ def run_monthly_rotation_backtest(
     cooldown_symbol_history: dict[str, list[tuple[pd.Period, float]]] = {}
 
     for month_index, month in enumerate(months):
-        if config.strategy.execution_mode == "rebalance_open_to_open" and month_index + 1 >= len(months):
-            break
+        is_open_tail_month = (
+            config.strategy.execution_mode == "rebalance_open_to_open"
+            and month_index + 1 >= len(months)
+        )
         buy_date = get_first_trading_day(calendar_prices, month)
         sell_date = _resolve_sell_date(
             calendar_prices,
@@ -171,12 +173,25 @@ def run_monthly_rotation_backtest(
                 "buy_date": buy_date,
                 "sell_date": sell_date,
                 "positions": positions,
+                "realize": not is_open_tail_month,
             }
         )
         previous_held_symbols = set(positions["symbol"].astype(str).tolist()) if not positions.empty else set()
 
     for plan_index, plan in enumerate(selection_plan):
         positions = plan["positions"]
+        if not plan.get("realize", True):
+            if collect_diagnostics and not positions.empty:
+                planned_snapshot = positions.copy()
+                planned_snapshot["run_id"] = run_id
+                planned_snapshot["month"] = plan["month"]
+                planned_snapshot["rebalance_datetime"] = plan["rebalance_datetime"]
+                planned_snapshot["buy_date"] = plan["buy_date"]
+                planned_snapshot["sell_date"] = plan["sell_date"]
+                planned_snapshot["used_period_end"] = planned_snapshot["period_end"]
+                planned_snapshot["used_announcement_datetime"] = planned_snapshot.get("announcement_datetime")
+                planned_positions.append(planned_snapshot)
+            continue
         prev_symbols = (
             set(selection_plan[plan_index - 1]["positions"]["symbol"].astype(str).tolist())
             if plan_index > 0 and not selection_plan[plan_index - 1]["positions"].empty

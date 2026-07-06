@@ -90,6 +90,7 @@ def build_profile_dashboard_dataset(
     preview_month = preview["preview_month"]
     preview_basis_date = preview["basis_date"]
     preview_regime = preview["regime"]
+    latest_market_month = preview.get("latest_month")
     latest_month_is_closed = bool(preview.get("latest_month_is_closed", False))
     if not preview_regime.empty:
         monthly_regimes = pd.concat([monthly_regimes, preview_regime], ignore_index=True)
@@ -116,9 +117,23 @@ def build_profile_dashboard_dataset(
     if not preview_with_confidence.empty:
         preview_with_confidence = _finalize_display_positions(preview_with_confidence)
     rejected_with_rank = _attach_provisional_rank(rejected_candidates, candidate_diagnostics)
+    planned_months = (
+        sorted(planned_with_confidence["month"].dropna().astype(str).unique().tolist())
+        if not planned_with_confidence.empty and "month" in planned_with_confidence.columns
+        else []
+    )
+    current_open_month = None
+    if (
+        not latest_month_is_closed
+        and latest_market_month is not None
+        and planned_months
+        and planned_months[-1] == str(latest_market_month)
+    ):
+        current_open_month = str(latest_market_month)
+
     open_display_month = (
         str(monthly_results["month"].iloc[-1])
-        if not monthly_results.empty and not latest_month_is_closed
+        if not monthly_results.empty and not latest_month_is_closed and current_open_month is None
         else None
     )
     display_positions = build_display_positions(
@@ -138,6 +153,7 @@ def build_profile_dashboard_dataset(
         preview_available=bool(preview_month),
         preview_positions=preview_with_confidence,
         latest_data_month_closed=latest_month_is_closed,
+        current_open_month=current_open_month,
     )
     current_month_alerts = build_current_month_alerts(missing_financials, summary["current_month"])
     summary["profile_id"] = profile.id
@@ -189,6 +205,7 @@ def build_summary(
     preview_available: bool = False,
     preview_positions: pd.DataFrame | None = None,
     latest_data_month_closed: bool | None = None,
+    current_open_month: str | None = None,
 ) -> dict[str, object]:
     latest_data_month = str(monthly_results["month"].iloc[-1]) if not monthly_results.empty else None
     all_months = (
@@ -209,7 +226,13 @@ def build_summary(
         )
         open_month_excluded = bool(latest_data_month is not None and len(all_months) >= 2)
     summary = calculate_summary(realized_monthly_results, config.backtest.initial_capital)
-    current_month = latest_data_month or latest_selected_month
+    display_months = (
+        sorted(display_positions["month"].dropna().astype(str).unique().tolist())
+        if not display_positions.empty and "month" in display_positions.columns
+        else []
+    )
+    latest_display_month = display_months[-1] if display_months else None
+    current_month = current_open_month or latest_display_month or latest_data_month or latest_selected_month
     current_positions = (
         preview_positions
         if preview_available and preview_positions is not None
@@ -484,16 +507,16 @@ def build_display_positions(
         realized["position_status"] = "realized"
         realized["position_status_detail"] = "Gerceklesti"
 
-    if latest_data_month is None:
-        return _finalize_display_positions(realized)
-
     if planned_positions.empty:
-        return realized
+        return _finalize_display_positions(realized)
     if realized.empty:
         display = planned_positions.copy()
-        if latest_data_month is not None:
+        target_open_month = latest_data_month
+        if target_open_month is None and "month" in display.columns and not display.empty:
+            target_open_month = str(display["month"].dropna().astype(str).max())
+        if target_open_month is not None:
             display["position_status"] = display["month"].map(
-                lambda month: "open" if str(month) == latest_data_month else "carried_forward"
+                lambda month: "open" if str(month) == target_open_month else "carried_forward"
             )
             display["position_status_detail"] = display["position_status"].map(
                 {
@@ -594,11 +617,17 @@ def _annotate_financial_base_freshness(display: pd.DataFrame) -> pd.DataFrame:
     fiscal_year = pd.to_numeric(fiscal_year_raw, errors="coerce")
     fiscal_quarter = pd.to_numeric(fiscal_quarter_raw, errors="coerce")
     if fiscal_year.isna().all() or fiscal_quarter.isna().all():
-        used_period_end = pd.to_datetime(result.get("used_period_end"), errors="coerce")
+        used_period_end_raw = result.get("used_period_end")
+        if not isinstance(used_period_end_raw, pd.Series):
+            used_period_end_raw = pd.Series([used_period_end_raw] * len(result), index=result.index)
+        used_period_end = pd.to_datetime(used_period_end_raw, errors="coerce")
         fiscal_year = used_period_end.dt.year
         fiscal_quarter = ((used_period_end.dt.month - 1) // 3) + 1
 
-    buy_dt = pd.to_datetime(result.get("buy_date"), errors="coerce")
+    buy_dt_raw = result.get("buy_date")
+    if not isinstance(buy_dt_raw, pd.Series):
+        buy_dt_raw = pd.Series([buy_dt_raw] * len(result), index=result.index)
+    buy_dt = pd.to_datetime(buy_dt_raw, errors="coerce")
     buy_year = buy_dt.dt.year
     buy_quarter = ((buy_dt.dt.month - 1) // 3) + 1
     lag = ((buy_year - fiscal_year) * 4) + (buy_quarter - fiscal_quarter)

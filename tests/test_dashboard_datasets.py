@@ -104,6 +104,50 @@ class TestDashboardDatasets:
         assert summary["open_month_excluded_from_metrics"] is False
         assert summary["number_of_months"] == 2
 
+    def test_buildSummary_usesCurrentOpenMonthFromPlannedPositions(self):
+        config = BacktestConfig(
+            project=ProjectConfig(name="test"),
+            data=DataConfig(duckdb_path=Path("dummy.duckdb")),
+            universe=UniverseConfig(symbols_file=Path("symbols.csv"), membership_file=Path("membership.csv"), name="BIST_SANAYI"),
+            point_in_time=PointInTimeConfig(),
+            strategy=StrategyConfig(),
+            scoring=ScoringConfig(),
+            costs=CostsConfig(),
+            filters=FiltersConfig(),
+            backtest=BacktestRangeConfig(start_date=pd.Timestamp("2026-01-01").date(), end_date=pd.Timestamp("2026-12-31").date(), initial_capital=100000.0),
+        )
+        monthly_results = pd.DataFrame(
+            [
+                {"month": "2026-05", "net_return": 0.10, "portfolio_value_start": 100000.0, "portfolio_value_end": 110000.0},
+                {"month": "2026-06", "net_return": -0.05, "portfolio_value_start": 110000.0, "portfolio_value_end": 104500.0},
+            ]
+        )
+        display_positions = pd.DataFrame(
+            [
+                {"month": "2026-05", "symbol": "AAA"},
+                {"month": "2026-06", "symbol": "BBB"},
+                {"month": "2026-07", "symbol": "CCC"},
+            ]
+        )
+        realized_positions = pd.DataFrame([{"month": "2026-05", "symbol": "AAA"}, {"month": "2026-06", "symbol": "BBB"}])
+        monthly_regimes = pd.DataFrame()
+
+        summary = build_summary(
+            config,
+            monthly_results,
+            display_positions,
+            realized_positions,
+            monthly_regimes,
+            preview_available=False,
+            latest_data_month_closed=True,
+            current_open_month="2026-07",
+        )
+
+        assert summary["current_month"] == "2026-07"
+        assert summary["latest_selected_month"] == "2026-06"
+        assert summary["metrics_through_month"] == "2026-06"
+        assert summary["open_month_excluded_from_metrics"] is False
+
     def test_buildDisplayPositions_keepsRealizedRowsWhenLatestMonthAlreadyClosed(self):
         planned_positions = pd.DataFrame([{"month": "2026-06", "symbol": "BBB"}])
         realized_positions = pd.DataFrame(
@@ -125,9 +169,29 @@ class TestDashboardDatasets:
             latest_data_month=None,
         )
 
-        assert result["month"].tolist() == ["2026-05"]
-        assert result["symbol"].tolist() == ["AAA"]
-        assert result["position_status"].tolist() == ["realized"]
+        assert result["month"].tolist() == ["2026-05", "2026-06"]
+        assert result["symbol"].tolist() == ["AAA", "BBB"]
+        assert result["position_status"].tolist() == ["realized", "open"]
+
+    def test_buildDisplayPositions_appendsCurrentOpenMonthWithoutDroppingLatestClosedMonth(self):
+        planned_positions = pd.DataFrame([{"month": "2026-07", "symbol": "BBB"}])
+        realized_positions = pd.DataFrame(
+            [
+                {"month": "2026-05", "symbol": "AAA"},
+                {"month": "2026-06", "symbol": "CCC"},
+            ]
+        )
+
+        result = build_display_positions(
+            planned_positions=planned_positions,
+            realized_positions=realized_positions,
+            rejected_candidates=pd.DataFrame(),
+            latest_data_month=None,
+        )
+
+        assert result["month"].tolist() == ["2026-05", "2026-06", "2026-07"]
+        assert result["symbol"].tolist() == ["AAA", "CCC", "BBB"]
+        assert result["position_status"].tolist() == ["realized", "realized", "open"]
 
     def test_buildSymbolConfidence_classifiesWinnerLoserAndNeutral(self):
         selected = pd.DataFrame(
