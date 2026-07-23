@@ -74,6 +74,7 @@ class TestDashboardApp:
                 {
                     "month": "2026-05",
                     "symbol": "AAA",
+                    "weight": 0.2,
                     "score": 1.0,
                     "x1": 0.6,
                     "x2": 0.4,
@@ -95,6 +96,7 @@ class TestDashboardApp:
                 {
                     "month": "2026-05",
                     "symbol": "GUBRF",
+                    "weight": 0.2,
                     "score": 0.56,
                     "selection_score": 0.46,
                     "x1": 0.51,
@@ -115,6 +117,7 @@ class TestDashboardApp:
                 {
                     "month": "2026-05",
                     "symbol": "ASTOR",
+                    "weight": 0.2,
                     "score": 0.52,
                     "selection_score": 0.52,
                     "x1": 0.49,
@@ -173,6 +176,7 @@ class TestDashboardApp:
                 {
                     "month": "2026-06",
                     "symbol": "CCC",
+                    "weight": 0.1111111111111111,
                     "score": 1.2,
                     "x1": 0.7,
                     "x2": 0.5,
@@ -216,12 +220,16 @@ class TestDashboardApp:
         home = client.get("/")
         assert home.status_code == 200
         assert "CCC" in home.text
+        assert "Sermaye Payi" in home.text
+        assert "11.11%" in home.text
         assert "Son veri ayi 2026 / 05." in home.text
         assert "Sonraki ay preview 2026 / 06 (baz: 2026-05-29)." in home.text
         assert "Ay sonu refresh basarisiz oldu: build-dashboard" in home.text
 
         positions = client.get("/positions?config=accepted_top6&year=2026&month=06")
         assert positions.status_code == 200
+        assert "Sermaye Payi" in positions.text
+        assert "11.11%" in positions.text
         assert "Bu liste ay sonu kapanisina gore uretilen sonraki ay preview listesidir." in positions.text
         assert "Son Job Basarisiz" in positions.text
 

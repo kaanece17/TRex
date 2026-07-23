@@ -214,6 +214,7 @@
       <table class="data-table responsive-table">
         <thead>
           <tr>
+            <th>Sermaye Payi</th>
             <th>Sembol</th>
             <th>Skor</th>
             <th>X1</th>
@@ -228,6 +229,7 @@
         <tbody>
           {% for row in current_positions %}
           <tr class="confidence-{{ row.confidence_level }}">
+            <td data-label="Sermaye Payi"><strong>{{ row.weight | fmt_pct }}</strong></td>
             <td data-label="Sembol"><strong>{{ row.symbol }}</strong></td>
             <td data-label="Skor">{{ row.score | fmt_num }}</td>
             <td data-label="X1">{{ row.x1 | fmt_num }}</td>
